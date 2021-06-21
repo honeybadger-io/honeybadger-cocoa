@@ -24,7 +24,7 @@
 
 @property (nonatomic) NSString* apiKey;
 @property (nonatomic) BOOL initialized;
-@property (nonatomic) NSMutableDictionary* context;
+@property (nonatomic) NSMutableDictionary<NSString*, NSString*>* context;
 
 @end
 
@@ -99,7 +99,7 @@ static Honeybadger* sharedInstance = nil;
         return;
     }
     
-    NSMutableDictionary* contextForThisError = [hb merge:hb.context with:(data ? data : @{})];
+    NSMutableDictionary<NSString*, NSString*>* contextForThisError = [hb merge:hb.context with:(data ? data : @{})];
 
     [hb processEvent:@{
         @"initialHandler" : @"notifyWithString",
@@ -134,7 +134,7 @@ static Honeybadger* sharedInstance = nil;
 
 
 
-+ (void) notifyWithError:(NSError*)error additionalData:(NSDictionary*)data
++ (void) notifyWithError:(NSError*)error additionalData:(NSDictionary<NSString*, NSString*>*)data
 {
     if ( !error ) return;
     
@@ -145,7 +145,7 @@ static Honeybadger* sharedInstance = nil;
         return;
     }
     
-    NSMutableDictionary* contextForThisError = [hb merge:hb.context with:(data ? data : @{})];
+    NSMutableDictionary<NSString*, NSString*>* contextForThisError = [hb merge:hb.context with:(data ? data : @{})];
 
     [hb processEvent:@{
         @"type" : @"Error",
@@ -160,7 +160,7 @@ static Honeybadger* sharedInstance = nil;
 
 
 
-+ (void) setContext:(NSDictionary*)context
++ (void) setContext:(NSDictionary<NSString*, NSString*>*)context
 {
     if ( context ) {
         Honeybadger* hb = [Honeybadger sharedInstance];
@@ -170,7 +170,7 @@ static Honeybadger* sharedInstance = nil;
 
 
 
-+ (void) resetContext:(NSDictionary*)context
++ (void) resetContext:(NSDictionary<NSString*, NSString*>*)context
 {
     [Honeybadger sharedInstance].context =
         [NSMutableDictionary dictionaryWithDictionary:(context ? context : @{})];
