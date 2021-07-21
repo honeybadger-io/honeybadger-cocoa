@@ -1,6 +1,6 @@
-# Honeybadger for iOS
+# Honeybadger for iOS and MacOS
 
-An iOS SDK for integrating [Honeybadger](https://honeybadger.io) into your iOS apps. This SDK can be used in both Swift and Objective-C apps.
+An SDK for integrating [Honeybadger](https://honeybadger.io) into your iOS and MacOS apps. This SDK can be used in both Swift and Objective-C projects.
 
 ## Installation
 
@@ -12,7 +12,6 @@ An iOS SDK for integrating [Honeybadger](https://honeybadger.io) into your iOS a
 To install via CocoaPods, create/open your **Pods** file and add a pod entry for **'Honeybadger'**. Make sure **use_frameworks!** is specified.
 
 ```shell
-platform :ios, '13.0'
 use_frameworks!
 
 target 'MyApp' do
@@ -22,11 +21,11 @@ end
 
 ### Swift Package Manager
 
-Open your app in Xcode, then go to **File** -> **Swift Packages** -> **Add Package Dependency**, and specify the Honeybadger iOS GitHub repo: **https://github.com/honeybadger-io/honeybadger-cocoa**
+Open your app in Xcode, then go to **File** -> **Swift Packages** -> **Add Package Dependency**, and specify the Honeybadger Cocoa GitHub repo: **https://github.com/honeybadger-io/honeybadger-cocoa**
 
 ## Initialization
 
-You will need your Honeybadger API key to initialize the Honeybadger iOS library. You can log into your [Honeybadger](https://honeybadger.io) account to obtain your API key.
+You will need your Honeybadger API key to initialize the Honeybadger library. You can log into your [Honeybadger](https://honeybadger.io) account to obtain your API key.
 
 In your App Delegate, import the Honeybadger library:
 
@@ -53,7 +52,7 @@ Honeybadger.configure(apiKey:"Your Honeybadger API key")
 ```
 
 ## Usage Examples
-iOS errors and exceptions will be automatically handled by the Honeybadger library, but you can also use the following API to customize error handling in your application.
+Errors and exceptions will be automatically handled by the Honeybadger library, but you can also use the following API to customize error handling in your application.
 
 ### notify
 You can use the **notify** methods to manually send an error as a string or Error/NSError object. If available, the Honeybadger library will attempt to extract a stack trace and any relevant information that might be useful. You can also optionally provide **additionalData**, to include any relevant information about the error.
@@ -129,4 +128,4 @@ Honeybadger.resetContext();
 
 ## License
 
-The Honeybadger iOS SDK is MIT-licensed. See the **LICENSE** file in this repository for details.
+The Honeybadger iOS/MacOS SDK is MIT-licensed. See the **LICENSE** file in this repository for details.

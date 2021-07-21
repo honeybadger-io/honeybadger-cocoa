@@ -16,7 +16,7 @@
 
 
 
-#define HONEYBADGER_APPLE_SDK_VERSION   @"0.01"
+#define HONEYBADGER_APPLE_SDK_VERSION   @"0.02"
 
 
 
@@ -555,7 +555,7 @@ void c_func_on_exception(NSException* e)
 
 - (BOOL) isSupportedPlatform
 {
-#if (TARGET_OS_IOS)
+#if (TARGET_OS_IOS || TARGET_OS_OSX)
     return TRUE;
 #endif
     return FALSE;
