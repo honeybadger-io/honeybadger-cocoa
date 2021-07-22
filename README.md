@@ -55,7 +55,7 @@ Honeybadger.configure(apiKey:"Your Honeybadger API key")
 Errors and exceptions will be automatically handled by the Honeybadger library, but you can also use the following API to customize error handling in your application.
 
 ### notify
-You can use the **notify** methods to manually send an error as a string or Error/NSError object. If available, the Honeybadger library will attempt to extract a stack trace and any relevant information that might be useful. You can also optionally provide **additionalData**, to include any relevant information about the error.
+You can use the **notify** methods to manually send an error as a string or Error/NSError object. If available, the Honeybadger library will attempt to extract a stack trace and any relevant information that might be useful. You can also optionally provide **context**, to include any relevant information about the error.
 
 **Swift**
 ```swift
@@ -66,7 +66,7 @@ Honeybadger.notify(
 
 Honeybadger.notify(
 	errorString: "My error", 
-	additionalData: ["additionalDataKey" : "additionalDataValue"]
+	context: ["user_id" : "123abc"]
 );
 
 Honeybadger.notify(
@@ -75,7 +75,7 @@ Honeybadger.notify(
 
 Honeybadger.notify(
 	error: MyError("This is my custom error."), 
-	additionalData: ["additionalDataKey" : "additionalDataValue"]
+	context: ["user_id" : "123abc"]
 );
 ```
 
@@ -85,7 +85,7 @@ Honeybadger.notify(
 
 [Honeybadger 
 	notifyWithString:@"My error" 
-	additionalData:@{ @"additionalDataKey" : @"additionalDataValue" }
+	context:@{ @"user_id" : @"123abc" }
 ];
 
 [Honeybadger notifyWithError:
@@ -94,7 +94,7 @@ Honeybadger.notify(
 
 [Honeybadger 
 	notifyWithError:[[NSError alloc] initWithDomain:@"my.test.error" code:-1 userInfo: @{}]
-	additionalData:@{ @"additionalDataKey" : @"additionalDataValue" }
+	context:@{ @"user_id" : @"123abc" }
 ];
 ```
 
