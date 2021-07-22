@@ -21,32 +21,35 @@ end
 
 ### Swift Package Manager
 
-Open your app in Xcode, then go to **File** -> **Swift Packages** -> **Add Package Dependency**, and specify the Honeybadger Cocoa GitHub repo: **https://github.com/honeybadger-io/honeybadger-cocoa**
+Open your app in Xcode, then go to **File** > **Swift Packages** > **Add Package Dependency**, and specify the Honeybadger Cocoa GitHub repo: **https://github.com/honeybadger-io/honeybadger-cocoa**
 
-## Initialization
+### Initialization
 
 You will need your Honeybadger API key to initialize the Honeybadger library. You can log into your [Honeybadger](https://honeybadger.io) account to obtain your API key.
 
 In your App Delegate, import the Honeybadger library:
 
-**Swift**
+#### Swift
+
 ```swift
 import Honeybadger
 ```
 
-**Objective-C**
+#### Objective-C
+
 ```objc
 @import Honeybadger;
 ```
 
-In your didFinishLaunchingWithOptions method, add the following code to initialize Honeybadger:
+In your `didFinishLaunchingWithOptions` method, add the following code to initialize Honeybadger:
 
-**Swift**
+#### Swift
+
 ```swift
 Honeybadger.configure(apiKey:"Your Honeybadger API key")
 ```
 
-**Objective-C**
+#### Objective-C
 ```objc
 [Honeybadger configureWithAPIKey:@"Your Honeybadger API key"];
 ```
@@ -57,7 +60,8 @@ Errors and exceptions will be automatically handled by the Honeybadger library, 
 ### notify
 You can use the **notify** methods to manually send an error as a string or Error/NSError object. If available, the Honeybadger library will attempt to extract a stack trace and any relevant information that might be useful. You can also optionally provide **context**, to include any relevant information about the error.
 
-**Swift**
+#### Swift
+
 ```swift
 
 Honeybadger.notify(
@@ -79,7 +83,8 @@ Honeybadger.notify(
 );
 ```
 
-**Objective-C**
+#### Objective-C
+
 ```objc
 [Honeybadger notifyWithString:@"My error"];
 
@@ -102,12 +107,14 @@ Honeybadger.notify(
 
 If you have data that you would like to include whenever an error or an exception occurs, you can provide that data using the **setContext** method. You can call **setContext** as many times as needed. New context data will be merged with any previously-set context data.
 
-**Swift**
+#### Swift
+
 ```swift
 Honeybadger.setContext(context: ["user_id" : "123abc"]);
 ```
 
-**Objective-C**
+#### Objective-C
+
 ```objc
 [Honeybadger setContext:@{@"user_id" : @"123abc"}];
 ```
@@ -116,12 +123,14 @@ Honeybadger.setContext(context: ["user_id" : "123abc"]);
 
 If you've used **setContext** to store data, you can use **resetContext** to clear that data.
 
-**Swift**
+#### Swift
+
 ```swift
 Honeybadger.resetContext();
 ```
 
-**Objective-C**
+#### Objective-C
+
 ```objc
 [Honeybadger setContext];
 ```
