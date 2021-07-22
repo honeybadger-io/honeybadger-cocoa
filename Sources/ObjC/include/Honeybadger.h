@@ -17,14 +17,14 @@ NS_SWIFT_NAME(configure(apiKey:));
 + (void) notifyWithString:(NSString*)errorString
 NS_SWIFT_NAME(notify(errorString:));
 
-+ (void) notifyWithString:(NSString*)errorString additionalData:(NSDictionary<NSString*, NSString*>*)data
-NS_SWIFT_NAME(notify(errorString:additionalData:));
++ (void) notifyWithString:(NSString*)errorString context:(NSDictionary<NSString*, NSString*>*)context
+NS_SWIFT_NAME(notify(errorString:context:));
 
 + (void) notifyWithError:(NSError*)error
 NS_SWIFT_NAME(notify(error:));
 
-+ (void) notifyWithError:(NSError*)error additionalData:(NSDictionary<NSString*, NSString*>*)data
-NS_SWIFT_NAME(notify(error:additionalData:));
++ (void) notifyWithError:(NSError*)error context:(NSDictionary<NSString*, NSString*>*)context
+NS_SWIFT_NAME(notify(error:context:));
 
 + (void) setContext:(NSDictionary<NSString*, NSString*>*)context
 NS_SWIFT_NAME(setContext(context:));

@@ -16,7 +16,7 @@
 
 
 
-#define HONEYBADGER_APPLE_SDK_VERSION   @"0.02"
+#define HONEYBADGER_APPLE_SDK_VERSION   @"0.0.3"
 
 
 
@@ -83,7 +83,7 @@ static Honeybadger* sharedInstance = nil;
 }
 
 
-+ (void) notifyWithString:(NSString*)message additionalData:(NSDictionary<NSString*, NSString*>*)data
++ (void) notifyWithString:(NSString*)message context:(NSDictionary<NSString*, NSString*>*)context
 {
     Honeybadger* hb = [Honeybadger sharedInstance];
     
@@ -99,7 +99,7 @@ static Honeybadger* sharedInstance = nil;
         return;
     }
     
-    NSMutableDictionary<NSString*, NSString*>* contextForThisError = [hb merge:hb.context with:(data ? data : @{})];
+    NSMutableDictionary<NSString*, NSString*>* contextForThisError = [hb merge:hb.context with:(context ? context : @{})];
 
     [hb processEvent:@{
         @"initialHandler" : @"notifyWithString",
@@ -134,7 +134,7 @@ static Honeybadger* sharedInstance = nil;
 
 
 
-+ (void) notifyWithError:(NSError*)error additionalData:(NSDictionary<NSString*, NSString*>*)data
++ (void) notifyWithError:(NSError*)error context:(NSDictionary<NSString*, NSString*>*)context
 {
     if ( !error ) return;
     
@@ -145,7 +145,7 @@ static Honeybadger* sharedInstance = nil;
         return;
     }
     
-    NSMutableDictionary<NSString*, NSString*>* contextForThisError = [hb merge:hb.context with:(data ? data : @{})];
+    NSMutableDictionary<NSString*, NSString*>* contextForThisError = [hb merge:hb.context with:(context ? context : @{})];
 
     [hb processEvent:@{
         @"type" : @"Error",
