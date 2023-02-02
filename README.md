@@ -46,12 +46,12 @@ In your `didFinishLaunchingWithOptions` method, add the following code to initia
 #### Swift
 
 ```swift
-Honeybadger.configure(apiKey:"Your Honeybadger API key")
+Honeybadger.configure(apiKey:"{{PROJECT_API_KEY}}")
 ```
 
 #### Objective-C
 ```objc
-[Honeybadger configureWithAPIKey:@"Your Honeybadger API key"];
+[Honeybadger configureWithAPIKey:@"{{PROJECT_API_KEY}}"];
 ```
 
 ## Usage Examples
