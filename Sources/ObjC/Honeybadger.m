@@ -473,8 +473,6 @@ void c_func_on_exception(NSException* e)
     }];
 
     [task resume];
-    
-    [NSThread sleepForTimeInterval:3.0];
 }
 
 
