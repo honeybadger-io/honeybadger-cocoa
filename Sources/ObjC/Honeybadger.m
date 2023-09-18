@@ -16,7 +16,7 @@
 
 
 
-#define HONEYBADGER_APPLE_SDK_VERSION   @"0.0.3"
+#define HONEYBADGER_APPLE_SDK_VERSION   @"0.0.5"
 
 
 

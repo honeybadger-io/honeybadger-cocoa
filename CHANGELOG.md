@@ -6,6 +6,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.5] - 2023-09-18
+### Changed
+- Removed unnecessary thread pause.
+
 ## [0.0.3] - 2021-07-21
 ### Changed
 - Method signatures have been renamed to be more inline with existing Honeybadger APIs.
