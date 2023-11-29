@@ -61,6 +61,12 @@ static Honeybadger* sharedInstance = nil;
 
 + (void) notifyWithString:(NSString*)message
 {
+    [Honeybadger notifyWithString:message errorClass:@""];
+}
+
+
++ (void) notifyWithString:(NSString*)message errorClass:(NSString*)errorClass
+{
     Honeybadger* hb = [Honeybadger sharedInstance];
     
     if ( ![hb isValidAPIKey:hb.apiKey] ) {
@@ -78,6 +84,7 @@ static Honeybadger* sharedInstance = nil;
     [hb processEvent:@{
         @"initialHandler" : @"notifyWithString",
         @"errorMsg" : message,
+        @"customErrorClass" : [hb safeTrimmedStr:errorClass],
         @"onNotifyCallStackSymbols" : [hb stackTrace:1]
     }];
 }
@@ -85,6 +92,12 @@ static Honeybadger* sharedInstance = nil;
 
 + (void) notifyWithString:(NSString*)message context:(NSDictionary<NSString*, NSString*>*)context
 {
+    [Honeybadger notifyWithString:message errorClass:@"" context:context];
+}
+
+
++ (void) notifyWithString:(NSString*)message errorClass:(NSString*)errorClass context:(NSDictionary<NSString*, NSString*>*)context
+{
     Honeybadger* hb = [Honeybadger sharedInstance];
     
     if ( ![hb isValidAPIKey:hb.apiKey] ) {
@@ -104,14 +117,20 @@ static Honeybadger* sharedInstance = nil;
     [hb processEvent:@{
         @"initialHandler" : @"notifyWithString",
         @"errorMsg" : message,
+        @"customErrorClass" : [hb safeTrimmedStr:errorClass],
         @"context" : contextForThisError,
         @"onNotifyCallStackSymbols" : [hb stackTrace:1]
     }];
 }
 
 
-
 + (void) notifyWithError:(NSError*)error
+{
+    [Honeybadger notifyWithError:error errorClass:@""];
+}
+
+
++ (void) notifyWithError:(NSError*)error errorClass:(NSString*)errorClass
 {
     if ( !error ) return;
     
@@ -126,6 +145,7 @@ static Honeybadger* sharedInstance = nil;
         @"type" : @"Error",
         @"initialHandler" : @"notifyWithError",
         @"userInfo" : error.userInfo ? error.userInfo : @{},
+        @"customErrorClass" : [hb safeTrimmedStr:errorClass],
         @"errorDomain" : [hb safeTrimmedStr:error.domain],
         @"localizedDescription" : [hb safeTrimmedStr:error.localizedDescription],
         @"onNotifyCallStackSymbols" : [hb stackTrace:1]
@@ -133,8 +153,13 @@ static Honeybadger* sharedInstance = nil;
 }
 
 
-
 + (void) notifyWithError:(NSError*)error context:(NSDictionary<NSString*, NSString*>*)context
+{
+    [Honeybadger notifyWithError:error errorClass:@"" context:context];
+}
+
+
++ (void) notifyWithError:(NSError*)error errorClass:(NSString*)errorClass context:(NSDictionary<NSString*, NSString*>*)context
 {
     if ( !error ) return;
     
@@ -151,6 +176,7 @@ static Honeybadger* sharedInstance = nil;
         @"type" : @"Error",
         @"initialHandler" : @"notifyWithError",
         @"userInfo" : error.userInfo ? error.userInfo : @{},
+        @"customErrorClass" : [hb safeTrimmedStr:errorClass],
         @"errorDomain" : [hb safeTrimmedStr:error.domain],
         @"localizedDescription" : [hb safeTrimmedStr:error.localizedDescription],
         @"context" : contextForThisError,
@@ -177,9 +203,7 @@ static Honeybadger* sharedInstance = nil;
 }
 
 
-
 // ----------------------------------------------------------------------------
-
 
 
 - (id) init
@@ -287,8 +311,15 @@ void c_func_on_exception(NSException* e)
 
 - (void) processEvent:(NSDictionary*)data
 {
+    // Do we have a custom error class name provided by the user?
+    NSString* errorClass = [self stringValueForKey:@"customErrorClass" fromDictionary:data defaultValue:@""];
+    if ( !errorClass || errorClass.length == 0 ) {
+        // ... we don't; generate a fallback/default error class name.
+        errorClass = [NSString stringWithFormat:@"%@ %@", [self platformName], [self stringValueForKey:@"type" fromDictionary:data defaultValue:@"Error"]];
+    }
+
     NSDictionary* payloadData = @{
-        @"errorClass" : [NSString stringWithFormat:@"%@ %@", [self platformName], [self stringValueForKey:@"type" fromDictionary:data defaultValue:@"Error"]],
+        @"errorClass" : errorClass,
         @"errorMsg" : [self errorMessageFromEventData:data],
         @"details" : @{
             @"errorDomain" : [self stringValueForKey:@"errorDomain" fromDictionary:data defaultValue:@""],
