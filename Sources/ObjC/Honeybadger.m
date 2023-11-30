@@ -564,7 +564,7 @@ void c_func_on_exception(NSException* e)
 #if TARGET_OS_IOS
     return [[UIDevice currentDevice] systemName];
 #elif TARGET_OS_OSX
-    return [[NSHost currentHost] name];
+    return @"macOS";
 #else
     NSLog(@"Error: unsupported platform.");
     return @"";
