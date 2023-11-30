@@ -58,7 +58,7 @@ Honeybadger.configure(apiKey:"{{PROJECT_API_KEY}}")
 Errors and exceptions will be automatically handled by the Honeybadger library, but you can also use the following API to customize error handling in your application.
 
 ### notify
-You can use the **notify** methods to manually send an error as a string or Error/NSError object. If available, the Honeybadger library will attempt to extract a stack trace and any relevant information that might be useful. You can also optionally provide **context**, to include any relevant information about the error.
+You can use the **notify** methods to manually send an error as a string or Error/NSError object. If available, the Honeybadger library will attempt to extract a stack trace and any relevant information that might be useful. You can also optionally provide **context**, to include any relevant information about the error. You can also provide a custom class name for the notification, via the optional **errorClass** parameter.
 
 #### Swift
 
@@ -69,7 +69,18 @@ Honeybadger.notify(
 );
 
 Honeybadger.notify(
+	errorString: "My error"
+	errorClass: "MyCustomErrorType"
+);
+
+Honeybadger.notify(
 	errorString: "My error", 
+	context: ["user_id" : "123abc"]
+);
+
+Honeybadger.notify(
+	errorString: "My error", 
+	errorClass: "MyCustomErrorType"
 	context: ["user_id" : "123abc"]
 );
 
@@ -78,7 +89,18 @@ Honeybadger.notify(
 );
 
 Honeybadger.notify(
+	error: MyError("This is my custom error.")
+	errorClass: "MyCustomErrorType"
+);
+
+Honeybadger.notify(
 	error: MyError("This is my custom error."), 
+	context: ["user_id" : "123abc"]
+);
+
+Honeybadger.notify(
+	error: MyError("This is my custom error."), 
+	errorClass: "MyCustomErrorType"
 	context: ["user_id" : "123abc"]
 );
 ```
@@ -86,10 +108,23 @@ Honeybadger.notify(
 #### Objective-C
 
 ```objc
-[Honeybadger notifyWithString:@"My error"];
+[Honeybadger 
+	notifyWithString:@"My error"
+];
 
 [Honeybadger 
 	notifyWithString:@"My error" 
+	errorClass:@"MyCustomErrorType"
+];
+
+[Honeybadger 
+	notifyWithString:@"My error" 
+	context:@{ @"user_id" : @"123abc" }
+];
+
+[Honeybadger 
+	notifyWithString:@"My error" 
+	errorClass:@"MyCustomErrorType"
 	context:@{ @"user_id" : @"123abc" }
 ];
 
@@ -97,8 +132,19 @@ Honeybadger.notify(
 	[[NSError alloc] initWithDomain:@"my.test.error" code:-1 userInfo: @{}]
 ];
 
+[Honeybadger notifyWithError:
+	[[NSError alloc] initWithDomain:@"my.test.error" code:-1 userInfo: @{}]
+	errorClass:@"MyCustomErrorType"
+];
+
 [Honeybadger 
 	notifyWithError:[[NSError alloc] initWithDomain:@"my.test.error" code:-1 userInfo: @{}]
+	context:@{ @"user_id" : @"123abc" }
+];
+
+[Honeybadger 
+	notifyWithError:[[NSError alloc] initWithDomain:@"my.test.error" code:-1 userInfo: @{}]
+	errorClass:@"MyCustomErrorType"
 	context:@{ @"user_id" : @"123abc" }
 ];
 ```
