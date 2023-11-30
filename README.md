@@ -54,6 +54,26 @@ Honeybadger.configure(apiKey:"{{PROJECT_API_KEY}}")
 [Honeybadger configureWithAPIKey:@"{{PROJECT_API_KEY}}"];
 ```
 
+You can also configure Honeybadger to use an optional custom **environment**.
+
+#### Swift
+
+```swift
+Honeybadger.configure(
+	apiKey:"{{PROJECT_API_KEY}}",
+	environment: "Staging"
+)
+```
+
+#### Objective-C
+```objc
+[Honeybadger 
+	configureWithAPIKey:@"{{PROJECT_API_KEY}}"
+	environment:@"Staging"
+];
+```
+
+
 ## Usage Examples
 Errors and exceptions will be automatically handled by the Honeybadger library, but you can also use the following API to customize error handling in your application.
 
