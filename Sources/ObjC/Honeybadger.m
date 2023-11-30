@@ -24,6 +24,7 @@
 
 @property (nonatomic) NSString* apiKey;
 @property (nonatomic) NSString* customEnvironment;
+@property (nonatomic) NSString* customFingerprint;
 @property (nonatomic) BOOL initialized;
 @property (nonatomic) NSMutableDictionary<NSString*, NSString*>* context;
 
@@ -33,21 +34,37 @@
 
 @implementation Honeybadger
 
-// -- SINGLETON ---
+// -- SINGLETON ------------------------------------------------------------
 static Honeybadger* sharedInstance = nil;
 + (Honeybadger*) sharedInstance { if ( sharedInstance == nil ) { sharedInstance = [[super allocWithZone:NULL] init]; } return sharedInstance; }
 + (id) allocWithZone:(NSZone*)zone { return [self sharedInstance]; }
 - (id) copyWithZone:(NSZone*)zone { return self; }
-// --
+// -------------------------------------------------------------------------
+
 
 
 + (void) configureWithAPIKey:(NSString*)apiKey
 {
-    [Honeybadger configureWithAPIKey:apiKey environment:@""];
+    [Honeybadger configureWithAPIKey:apiKey environment:@"" fingerprint:@""];
 }
 
 
+
 + (void) configureWithAPIKey:(NSString*)apiKey environment:(NSString*)environment
+{
+    [Honeybadger configureWithAPIKey:apiKey environment:environment fingerprint:@""];
+}
+
+
+
++ (void) configureWithAPIKey:(NSString*)apiKey fingerprint:(NSString*)fingerprint
+{
+    [Honeybadger configureWithAPIKey:apiKey environment:@"" fingerprint:fingerprint];
+}
+
+
+
++ (void) configureWithAPIKey:(NSString*)apiKey environment:(NSString*)environment fingerprint:(NSString*)fingerprint
 {
     Honeybadger* hb = [Honeybadger sharedInstance];
     if ( ![hb isSupportedPlatform] ) {
@@ -62,15 +79,18 @@ static Honeybadger* sharedInstance = nil;
     
     hb.apiKey = [hb safeTrimmedStr:apiKey];
     hb.customEnvironment = [hb safeTrimmedStr:environment];
+    hb.customFingerprint = [hb safeTrimmedStr:fingerprint];
     [hb setExceptionHandler];
     hb.initialized = TRUE;
 }
+
 
 
 + (void) notifyWithString:(NSString*)message
 {
     [Honeybadger notifyWithString:message errorClass:@""];
 }
+
 
 
 + (void) notifyWithString:(NSString*)message errorClass:(NSString*)errorClass
@@ -98,10 +118,12 @@ static Honeybadger* sharedInstance = nil;
 }
 
 
+
 + (void) notifyWithString:(NSString*)message context:(NSDictionary<NSString*, NSString*>*)context
 {
     [Honeybadger notifyWithString:message errorClass:@"" context:context];
 }
+
 
 
 + (void) notifyWithString:(NSString*)message errorClass:(NSString*)errorClass context:(NSDictionary<NSString*, NSString*>*)context
@@ -132,10 +154,12 @@ static Honeybadger* sharedInstance = nil;
 }
 
 
+
 + (void) notifyWithError:(NSError*)error
 {
     [Honeybadger notifyWithError:error errorClass:@""];
 }
+
 
 
 + (void) notifyWithError:(NSError*)error errorClass:(NSString*)errorClass
@@ -161,10 +185,12 @@ static Honeybadger* sharedInstance = nil;
 }
 
 
+
 + (void) notifyWithError:(NSError*)error context:(NSDictionary<NSString*, NSString*>*)context
 {
     [Honeybadger notifyWithError:error errorClass:@"" context:context];
 }
+
 
 
 + (void) notifyWithError:(NSError*)error errorClass:(NSString*)errorClass context:(NSDictionary<NSString*, NSString*>*)context
@@ -211,7 +237,7 @@ static Honeybadger* sharedInstance = nil;
 }
 
 
-// ----------------------------------------------------------------------------
+// -------------------------------------------------------------------------
 
 
 - (id) init
@@ -442,30 +468,32 @@ void c_func_on_exception(NSException* e)
 }
 
 
+
 - (NSDictionary*) buildPayload:(NSDictionary*)data
 {
+    NSMutableDictionary* errorObj = [NSMutableDictionary dictionaryWithDictionary:@{
+        @"class" : [self stringValueForKey:@"errorClass" fromDictionary:data defaultValue:@"iOS Error"],
+        @"message" : [self stringValueForKey:@"errorMsg" fromDictionary:data defaultValue:@"Unknown Error"],
+        @"backtrace" : data[@"backTrace"] ? data[@"backTrace"] : @{}
+    }];
+    
+    if ( self.customFingerprint && self.customFingerprint.length > 0 ) {
+        errorObj[@"fingerprint"] = self.customFingerprint;
+    }
+
     NSMutableDictionary* payload = [NSMutableDictionary dictionaryWithDictionary:@{
-        
         @"notifier" : @{
             @"name" : @"Honeybadger Cocoa Notifier",
             @"url" : @"https://github.com/honeybadger-io/honeybadger-cocoa",
             @"version" : HONEYBADGER_APPLE_SDK_VERSION
         },
-
-        @"error" : @{
-            @"class" : [self stringValueForKey:@"errorClass" fromDictionary:data defaultValue:@"iOS Error"],
-            @"message" : [self stringValueForKey:@"errorMsg" fromDictionary:data defaultValue:@"Unknown Error"],
-            @"backtrace" : data[@"backTrace"] ? data[@"backTrace"] : @{}
-        },
-        
+        @"error" : errorObj,
         @"request" : @{
             @"context" : data[@"context"] ? data[@"context"] : @{}
         },
-
         @"server" : @{
             @"environment_name" : [self environment]
         }
-    
     }];
     
     NSString* details = [self stringValueForKey:@"details" fromDictionary:data defaultValue:@""];
@@ -479,7 +507,9 @@ void c_func_on_exception(NSException* e)
 }
 
 
-- (void) sendToHoneybadger:(NSDictionary*)payload {
+
+- (void) sendToHoneybadger:(NSDictionary*)payload
+{
     if ( !payload || ![self isValidAPIKey:_apiKey] ) {
         return;
     }

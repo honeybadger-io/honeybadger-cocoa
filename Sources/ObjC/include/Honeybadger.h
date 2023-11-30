@@ -11,11 +11,21 @@ NS_ASSUME_NONNULL_BEGIN
 
 - (id) init NS_UNAVAILABLE;
 
+// CONFIG ------------------------------------------------------------------
+
 + (void) configureWithAPIKey:(NSString*)apiKey
 NS_SWIFT_NAME(configure(apiKey:));
 
++ (void) configureWithAPIKey:(NSString*)apiKey fingerprint:(NSString*)fingerprint
+NS_SWIFT_NAME(configure(apiKey:fingerprint:));
+
 + (void) configureWithAPIKey:(NSString*)apiKey environment:(NSString*)environment
 NS_SWIFT_NAME(configure(apiKey:environment:));
+
++ (void) configureWithAPIKey:(NSString*)apiKey environment:(NSString*)environment fingerprint:(NSString*)fingerprint
+NS_SWIFT_NAME(configure(apiKey:environment:fingerprint:));
+
+// NOTIFY ------------------------------------------------------------------
 
 + (void) notifyWithString:(NSString*)errorString
 NS_SWIFT_NAME(notify(errorString:));
@@ -37,6 +47,8 @@ NS_SWIFT_NAME(notify(error:errorClass:));
 
 + (void) notifyWithError:(NSError*)error errorClass:(NSString*)errorClass context:(NSDictionary<NSString*, NSString*>*)context
 NS_SWIFT_NAME(notify(error:errorClass:context:));
+
+// CONTEXT -----------------------------------------------------------------
 
 + (void) setContext:(NSDictionary<NSString*, NSString*>*)context
 NS_SWIFT_NAME(setContext(context:));
