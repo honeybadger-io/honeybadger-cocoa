@@ -1,5 +1,5 @@
 //
-// Honeybadger iOS/MacOS
+// Honeybadger iOS/macOS
 //
 
 
@@ -16,7 +16,7 @@
 
 
 
-#define HONEYBADGER_APPLE_SDK_VERSION   @"1.0.0"
+#define HONEYBADGER_APPLE_SDK_VERSION   @"1.0.1"
 
 
 
@@ -24,7 +24,6 @@
 
 @property (nonatomic) NSString* apiKey;
 @property (nonatomic) NSString* customEnvironment;
-@property (nonatomic) NSString* customFingerprint;
 @property (nonatomic) BOOL initialized;
 @property (nonatomic) NSMutableDictionary<NSString*, NSString*>* context;
 
@@ -43,29 +42,13 @@ static Honeybadger* sharedInstance = nil;
 
 
 
-+ (void) configureWithAPIKey:(NSString*)apiKey
-{
-    [Honeybadger configureWithAPIKey:apiKey environment:@"" fingerprint:@""];
+// CONFIG ------------------------------------------------------------------
+
++ (void) configureWithAPIKey:(NSString*)apiKey {
+    [Honeybadger configureWithAPIKey:apiKey environment:@""];
 }
 
-
-
-+ (void) configureWithAPIKey:(NSString*)apiKey environment:(NSString*)environment
-{
-    [Honeybadger configureWithAPIKey:apiKey environment:environment fingerprint:@""];
-}
-
-
-
-+ (void) configureWithAPIKey:(NSString*)apiKey fingerprint:(NSString*)fingerprint
-{
-    [Honeybadger configureWithAPIKey:apiKey environment:@"" fingerprint:fingerprint];
-}
-
-
-
-+ (void) configureWithAPIKey:(NSString*)apiKey environment:(NSString*)environment fingerprint:(NSString*)fingerprint
-{
++ (void) configureWithAPIKey:(NSString*)apiKey environment:(NSString*)environment {
     Honeybadger* hb = [Honeybadger sharedInstance];
     if ( ![hb isSupportedPlatform] ) {
         NSLog(@"Error: The Honeybadger SDK does not currently support this platform.");
@@ -79,21 +62,46 @@ static Honeybadger* sharedInstance = nil;
     
     hb.apiKey = [hb safeTrimmedStr:apiKey];
     hb.customEnvironment = [hb safeTrimmedStr:environment];
-    hb.customFingerprint = [hb safeTrimmedStr:fingerprint];
     [hb setExceptionHandler];
     hb.initialized = TRUE;
 }
 
 
 
+// NOTIFY ------------------------------------------------------------------
+
++ (void) notifyWithString:(NSString*)message {
+    [Honeybadger notifyWithString:message errorClass:@"" context:@{} fingerprint:@""];
+}
+
++ (void) notifyWithString:(NSString*)message errorClass:(NSString*)errorClass {
+    [Honeybadger notifyWithString:message errorClass:errorClass context:@{} fingerprint:@""];
+}
+
++ (void) notifyWithString:(NSString*)message context:(NSDictionary<NSString*, NSString*>*)context {
+    [Honeybadger notifyWithString:message errorClass:@"" context:context fingerprint:@""];
+}
+
++ (void) notifyWithString:(NSString*)message fingerprint:(NSString*)fingerprint {
+    [Honeybadger notifyWithString:message errorClass:@"" context:@{} fingerprint:fingerprint];
+}
+
++ (void) notifyWithString:(NSString*)message errorClass:(NSString*)errorClass context:(NSDictionary<NSString*, NSString*>*)context {
+    [Honeybadger notifyWithString:message errorClass:errorClass context:context fingerprint:@""];
+}
+
++ (void) notifyWithString:(NSString*)message errorClass:(NSString*)errorClass fingerprint:(NSString*)fingerprint {
+    [Honeybadger notifyWithString:message errorClass:errorClass context:@{} fingerprint:fingerprint];
+}
+
++ (void) notifyWithString:(NSString*)message context:(NSDictionary<NSString*, NSString*>*)context fingerprint:(NSString*)fingerprint {
+    [Honeybadger notifyWithString:message errorClass:@"" context:context fingerprint:fingerprint];
+}
+
 + (void) notifyWithString:(NSString*)message
-{
-    [Honeybadger notifyWithString:message errorClass:@""];
-}
-
-
-
-+ (void) notifyWithString:(NSString*)message errorClass:(NSString*)errorClass
+    errorClass:(NSString*)errorClass
+    context:(NSDictionary<NSString*, NSString*>*)context
+    fingerprint:(NSString*)fingerprint
 {
     Honeybadger* hb = [Honeybadger sharedInstance];
     
@@ -108,92 +116,55 @@ static Honeybadger* sharedInstance = nil;
         NSLog(@"Error: Honeybadger notifyWithString - invalid message");
         return;
     }
-    
-    [hb processEvent:@{
-        @"initialHandler" : @"notifyWithString",
-        @"errorMsg" : message,
-        @"customErrorClass" : [hb safeTrimmedStr:errorClass],
-        @"onNotifyCallStackSymbols" : [hb stackTrace:1]
-    }];
-}
 
-
-
-+ (void) notifyWithString:(NSString*)message context:(NSDictionary<NSString*, NSString*>*)context
-{
-    [Honeybadger notifyWithString:message errorClass:@"" context:context];
-}
-
-
-
-+ (void) notifyWithString:(NSString*)message errorClass:(NSString*)errorClass context:(NSDictionary<NSString*, NSString*>*)context
-{
-    Honeybadger* hb = [Honeybadger sharedInstance];
-    
-    if ( ![hb isValidAPIKey:hb.apiKey] ) {
-        [hb informUserOfInvalidAPIKey];
-        return;
-    }
-    
-    message = [hb safeTrimmedStr:message];
-    
-    if ( message.length == 0 ) {
-        NSLog(@"Error: Honeybadger notifyWithString - invalid message");
-        return;
-    }
-    
     NSMutableDictionary<NSString*, NSString*>* contextForThisError = [hb merge:hb.context with:(context ? context : @{})];
+
+    fingerprint = [hb safeTrimmedStr:fingerprint];
 
     [hb processEvent:@{
         @"initialHandler" : @"notifyWithString",
         @"errorMsg" : message,
         @"customErrorClass" : [hb safeTrimmedStr:errorClass],
         @"context" : contextForThisError,
+        @"fingerprint" : fingerprint,
         @"onNotifyCallStackSymbols" : [hb stackTrace:1]
     }];
 }
 
+// ---
 
++ (void) notifyWithError:(NSError*)error {
+    [Honeybadger notifyWithError:error errorClass:@"" context:@{} fingerprint:@""];
+}
+
++ (void) notifyWithError:(NSError*)error errorClass:(NSString*)errorClass {
+    [Honeybadger notifyWithError:error errorClass:errorClass context:@{} fingerprint:@""];
+}
+
++ (void) notifyWithError:(NSError*)error context:(NSDictionary<NSString*, NSString*>*)context {
+    [Honeybadger notifyWithError:error errorClass:@"" context:context fingerprint:@""];
+}
+
++ (void) notifyWithError:(NSError*)error fingerprint:(NSString*)fingerprint {
+    [Honeybadger notifyWithError:error errorClass:@"" context:@{} fingerprint:fingerprint];
+}
+
++ (void) notifyWithError:(NSError*)error errorClass:(NSString*)errorClass context:(NSDictionary<NSString*, NSString*>*)context {
+    [Honeybadger notifyWithError:error errorClass:errorClass context:context fingerprint:@""];
+}
+
++ (void) notifyWithError:(NSError*)error errorClass:(NSString*)errorClass fingerprint:(NSString*)fingerprint {
+    [Honeybadger notifyWithError:error errorClass:errorClass context:@{} fingerprint:fingerprint];
+}
+
++ (void) notifyWithError:(NSError*)error context:(NSDictionary<NSString*, NSString*>*)context fingerprint:(NSString*)fingerprint {
+    [Honeybadger notifyWithError:error errorClass:@"" context:context fingerprint:fingerprint];
+}
 
 + (void) notifyWithError:(NSError*)error
-{
-    [Honeybadger notifyWithError:error errorClass:@""];
-}
-
-
-
-+ (void) notifyWithError:(NSError*)error errorClass:(NSString*)errorClass
-{
-    if ( !error ) return;
-    
-    Honeybadger* hb = [Honeybadger sharedInstance];
-    
-    if ( ![hb isValidAPIKey:hb.apiKey] ) {
-        [hb informUserOfInvalidAPIKey];
-        return;
-    }
-    
-    [hb processEvent:@{
-        @"type" : @"Error",
-        @"initialHandler" : @"notifyWithError",
-        @"userInfo" : error.userInfo ? error.userInfo : @{},
-        @"customErrorClass" : [hb safeTrimmedStr:errorClass],
-        @"errorDomain" : [hb safeTrimmedStr:error.domain],
-        @"localizedDescription" : [hb safeTrimmedStr:error.localizedDescription],
-        @"onNotifyCallStackSymbols" : [hb stackTrace:1]
-    }];
-}
-
-
-
-+ (void) notifyWithError:(NSError*)error context:(NSDictionary<NSString*, NSString*>*)context
-{
-    [Honeybadger notifyWithError:error errorClass:@"" context:context];
-}
-
-
-
-+ (void) notifyWithError:(NSError*)error errorClass:(NSString*)errorClass context:(NSDictionary<NSString*, NSString*>*)context
+    errorClass:(NSString*)errorClass
+    context:(NSDictionary<NSString*, NSString*>*)context
+    fingerprint:(NSString*)fingerprint
 {
     if ( !error ) return;
     
@@ -206,6 +177,8 @@ static Honeybadger* sharedInstance = nil;
     
     NSMutableDictionary<NSString*, NSString*>* contextForThisError = [hb merge:hb.context with:(context ? context : @{})];
 
+    fingerprint = [hb safeTrimmedStr:fingerprint];
+
     [hb processEvent:@{
         @"type" : @"Error",
         @"initialHandler" : @"notifyWithError",
@@ -214,6 +187,7 @@ static Honeybadger* sharedInstance = nil;
         @"errorDomain" : [hb safeTrimmedStr:error.domain],
         @"localizedDescription" : [hb safeTrimmedStr:error.localizedDescription],
         @"context" : contextForThisError,
+        @"fingerprint" : fingerprint,
         @"onNotifyCallStackSymbols" : [hb stackTrace:1]
     }];
 }
@@ -362,6 +336,7 @@ void c_func_on_exception(NSException* e)
             @"architecture" : [NSString stringWithUTF8String:NXGetLocalArchInfo()->name]
         },
         @"context" : (data[@"context"] ? data[@"context"] : (_context ? _context : @{})),
+        @"fingerprint" : (data[@"fingerprint"] ? data[@"fingerprint"] : @""),
         @"backTrace" : [self framesFromCallStack:data]
     };
 
@@ -476,9 +451,10 @@ void c_func_on_exception(NSException* e)
         @"message" : [self stringValueForKey:@"errorMsg" fromDictionary:data defaultValue:@"Unknown Error"],
         @"backtrace" : data[@"backTrace"] ? data[@"backTrace"] : @{}
     }];
-    
-    if ( self.customFingerprint && self.customFingerprint.length > 0 ) {
-        errorObj[@"fingerprint"] = self.customFingerprint;
+
+    NSString* fingerprint = [self stringValueForKey:@"fingerprint" fromDictionary:data defaultValue:@""];
+    if ( fingerprint.length > 0 ) {
+        errorObj[@"fingerprint"] = fingerprint;
     }
 
     NSMutableDictionary* payload = [NSMutableDictionary dictionaryWithDictionary:@{

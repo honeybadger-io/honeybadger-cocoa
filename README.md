@@ -1,6 +1,6 @@
-# Honeybadger for iOS and MacOS
+# Honeybadger for iOS and macOS
 
-An SDK for integrating [Honeybadger](https://honeybadger.io) into your iOS and MacOS apps. This SDK can be used in both Swift and Objective-C projects.
+An SDK for integrating [Honeybadger](https://honeybadger.io) into your iOS and macOS apps. This SDK can be used in both Swift and Objective-C projects.
 
 ## Installation
 
@@ -54,25 +54,14 @@ Honeybadger.configure(apiKey:"{{PROJECT_API_KEY}}")
 [Honeybadger configureWithAPIKey:@"{{PROJECT_API_KEY}}"];
 ```
 
-You can also configure Honeybadger to use an optional custom **environment** parameter, as well as an optional custom **fingerprint** parameter, for error grouping.
+You can also configure Honeybadger to use an optional custom **environment** parameter.
 
 #### Swift
 
 ```swift
 Honeybadger.configure(
 	apiKey:"{{PROJECT_API_KEY}}",
-	environment: "Staging"
-)
-
-Honeybadger.configure(
-	apiKey:"{{PROJECT_API_KEY}}",
-	fingerprint: "my-custom-error-fingerprint"
-)
-
-Honeybadger.configure(
-	apiKey:"{{PROJECT_API_KEY}}",
-	environment: "Staging",
-	fingerprint: "my-custom-error-fingerprint"
+	environment:"Staging"
 )
 ```
 
@@ -82,17 +71,6 @@ Honeybadger.configure(
 	configureWithAPIKey:@"{{PROJECT_API_KEY}}"
 	environment:@"Staging"
 ];
-
-[Honeybadger 
-	configureWithAPIKey:@"{{PROJECT_API_KEY}}"
-	fingerprint:@"my-custom-error-fingerprint"
-];
-
-[Honeybadger 
-	configureWithAPIKey:@"{{PROJECT_API_KEY}}"
-	environment:@"Staging"
-	fingerprint:@"my-custom-error-fingerprint"
-];
 ```
 
 
@@ -100,7 +78,7 @@ Honeybadger.configure(
 Errors and exceptions will be automatically handled by the Honeybadger library, but you can also use the following API to customize error handling in your application.
 
 ### notify
-You can use the **notify** methods to manually send an error as a string or Error/NSError object. If available, the Honeybadger library will attempt to extract a stack trace and any relevant information that might be useful. You can also optionally provide **context**, to include any relevant information about the error. You can also provide a custom class name for the notification, via the optional **errorClass** parameter.
+You can use the **notify** methods to manually send an error as a string or Error/NSError object. If available, the Honeybadger library will attempt to extract a stack trace and any relevant information that might be useful. You can provide an optional **context**, to include any relevant information about the error. You can also provide a custom class name for the notification, via the optional **errorClass** parameter, and a custom fingerprint for error grouping, via the optional **fingerprint** parameter.
 
 #### Swift
 
@@ -122,9 +100,35 @@ Honeybadger.notify(
 
 Honeybadger.notify(
 	errorString: "My error", 
+	fingerprint: "my-custom-error-fingerprint"
+);
+
+Honeybadger.notify(
+	errorString: "My error", 
 	errorClass: "MyCustomErrorType"
 	context: ["user_id" : "123abc"]
 );
+
+Honeybadger.notify(
+	errorString: "My error", 
+	errorClass: "MyCustomErrorType"
+	fingerprint: "my-custom-error-fingerprint"
+);
+
+Honeybadger.notify(
+	errorString: "My error", 
+	context: ["user_id" : "123abc"]
+	fingerprint: "my-custom-error-fingerprint"
+);
+
+Honeybadger.notify(
+	errorString: "My error", 
+	errorClass: "MyCustomErrorType"
+	context: ["user_id" : "123abc"]
+	fingerprint: "my-custom-error-fingerprint"
+);
+
+// ---
 
 Honeybadger.notify(
 	error: MyError("This is my custom error.")
@@ -136,15 +140,35 @@ Honeybadger.notify(
 );
 
 Honeybadger.notify(
-	error: MyError("This is my custom error."), 
+	error: MyError("This is my custom error.")
 	context: ["user_id" : "123abc"]
 );
 
 Honeybadger.notify(
-	error: MyError("This is my custom error."), 
+	error: MyError("This is my custom error.")
+	fingerprint: "my-custom-error-fingerprint"
+);
+
+Honeybadger.notify(
+	error: MyError("This is my custom error.")
 	errorClass: "MyCustomErrorType"
 	context: ["user_id" : "123abc"]
 );
+
+Honeybadger.notify(
+	error: MyError("This is my custom error.")
+	errorClass: "MyCustomErrorType"
+	fingerprint: "my-custom-error-fingerprint"
+);
+
+Honeybadger.notify(
+	error: MyError("This is my custom error.")
+	errorClass: "MyCustomErrorType"
+	context: ["user_id" : "123abc"]
+	fingerprint: "my-custom-error-fingerprint"
+);
+
+
 ```
 
 #### Objective-C
@@ -166,9 +190,35 @@ Honeybadger.notify(
 
 [Honeybadger 
 	notifyWithString:@"My error" 
+	fingerprint:@"my-custom-error-fingerprint"
+];
+
+[Honeybadger 
+	notifyWithString:@"My error" 
 	errorClass:@"MyCustomErrorType"
 	context:@{ @"user_id" : @"123abc" }
 ];
+
+[Honeybadger 
+	notifyWithString:@"My error" 
+	errorClass:@"MyCustomErrorType"
+	fingerprint:@"my-custom-error-fingerprint"
+];
+
+[Honeybadger 
+	notifyWithString:@"My error" 
+	context:@{ @"user_id" : @"123abc" }
+	fingerprint:@"my-custom-error-fingerprint"
+];
+
+[Honeybadger 
+	notifyWithString:@"My error" 
+	errorClass:@"MyCustomErrorType"
+	context:@{ @"user_id" : @"123abc" }
+	fingerprint:@"my-custom-error-fingerprint"
+];
+
+// ---
 
 [Honeybadger notifyWithError:
 	[[NSError alloc] initWithDomain:@"my.test.error" code:-1 userInfo: @{}]
@@ -179,15 +229,39 @@ Honeybadger.notify(
 	errorClass:@"MyCustomErrorType"
 ];
 
-[Honeybadger 
-	notifyWithError:[[NSError alloc] initWithDomain:@"my.test.error" code:-1 userInfo: @{}]
+[Honeybadger notifyWithError:
+	[[NSError alloc] initWithDomain:@"my.test.error" code:-1 userInfo: @{}]
 	context:@{ @"user_id" : @"123abc" }
 ];
 
-[Honeybadger 
-	notifyWithError:[[NSError alloc] initWithDomain:@"my.test.error" code:-1 userInfo: @{}]
+[Honeybadger notifyWithError:
+	[[NSError alloc] initWithDomain:@"my.test.error" code:-1 userInfo: @{}]
+	fingerprint:@"my-custom-error-fingerprint"
+];
+
+[Honeybadger notifyWithError:
+	[[NSError alloc] initWithDomain:@"my.test.error" code:-1 userInfo: @{}]
 	errorClass:@"MyCustomErrorType"
 	context:@{ @"user_id" : @"123abc" }
+];
+
+[Honeybadger notifyWithError:
+	[[NSError alloc] initWithDomain:@"my.test.error" code:-1 userInfo: @{}]
+	errorClass:@"MyCustomErrorType"
+	fingerprint:@"my-custom-error-fingerprint"
+];
+
+[Honeybadger notifyWithError:
+	[[NSError alloc] initWithDomain:@"my.test.error" code:-1 userInfo: @{}]
+	context:@{ @"user_id" : @"123abc" }
+	fingerprint:@"my-custom-error-fingerprint"
+];
+
+[Honeybadger notifyWithError:
+	[[NSError alloc] initWithDomain:@"my.test.error" code:-1 userInfo: @{}]
+	errorClass:@"MyCustomErrorType"
+	context:@{ @"user_id" : @"123abc" }
+	fingerprint:@"my-custom-error-fingerprint"
 ];
 ```
 
@@ -225,4 +299,4 @@ Honeybadger.resetContext();
 
 ## License
 
-The Honeybadger iOS/MacOS SDK is MIT-licensed. See the **LICENSE** file in this repository for details.
+The Honeybadger iOS/macOS SDK is MIT-licensed. See the **LICENSE** file in this repository for details.

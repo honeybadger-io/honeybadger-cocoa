@@ -6,6 +6,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.1] - 2023-11-30
+### Added
+- Added the ability to specify a customer error class.
+- Added the ability to specify a custom environment.
+- Added the ability to specify a custom fingerprint.
+
 ## [0.0.5] - 2023-09-18
 ### Changed
 - Removed unnecessary thread pause.
