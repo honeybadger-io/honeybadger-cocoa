@@ -54,7 +54,7 @@ Honeybadger.configure(apiKey:"{{PROJECT_API_KEY}}")
 [Honeybadger configureWithAPIKey:@"{{PROJECT_API_KEY}}"];
 ```
 
-You can also configure Honeybadger to use an optional custom **environment**.
+You can also configure Honeybadger to use an optional custom **environment** parameter, as well as an optional custom **fingerprint** parameter, for error grouping.
 
 #### Swift
 
@@ -63,6 +63,17 @@ Honeybadger.configure(
 	apiKey:"{{PROJECT_API_KEY}}",
 	environment: "Staging"
 )
+
+Honeybadger.configure(
+	apiKey:"{{PROJECT_API_KEY}}",
+	fingerprint: "my-custom-error-fingerprint"
+)
+
+Honeybadger.configure(
+	apiKey:"{{PROJECT_API_KEY}}",
+	environment: "Staging",
+	fingerprint: "my-custom-error-fingerprint"
+)
 ```
 
 #### Objective-C
@@ -70,6 +81,17 @@ Honeybadger.configure(
 [Honeybadger 
 	configureWithAPIKey:@"{{PROJECT_API_KEY}}"
 	environment:@"Staging"
+];
+
+[Honeybadger 
+	configureWithAPIKey:@"{{PROJECT_API_KEY}}"
+	fingerprint:@"my-custom-error-fingerprint"
+];
+
+[Honeybadger 
+	configureWithAPIKey:@"{{PROJECT_API_KEY}}"
+	environment:@"Staging"
+	fingerprint:@"my-custom-error-fingerprint"
 ];
 ```
 
