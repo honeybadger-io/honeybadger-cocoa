@@ -11,6 +11,7 @@ Pod::Spec.new do |spec|
   	spec.source = { :git => "https://github.com/honeybadger-io/honeybadger-cocoa.git", :tag => spec.version.to_s }
 	spec.default_subspecs = "Core"
 	spec.swift_version = '4.0'
+	spec.cocoapods_version = '>= 1.13.0'
 	spec.subspec "Core" do |subspec|
 		subspec.source_files = "Sources/ObjC/**/*.{h,m}"
 	end
