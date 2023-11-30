@@ -23,6 +23,7 @@
 @interface Honeybadger ()
 
 @property (nonatomic) NSString* apiKey;
+@property (nonatomic) NSString* customEnvironment;
 @property (nonatomic) BOOL initialized;
 @property (nonatomic) NSMutableDictionary<NSString*, NSString*>* context;
 
@@ -42,6 +43,12 @@ static Honeybadger* sharedInstance = nil;
 
 + (void) configureWithAPIKey:(NSString*)apiKey
 {
+    [Honeybadger configureWithAPIKey:apiKey environment:@""];
+}
+
+
++ (void) configureWithAPIKey:(NSString*)apiKey environment:(NSString*)environment
+{
     Honeybadger* hb = [Honeybadger sharedInstance];
     if ( ![hb isSupportedPlatform] ) {
         NSLog(@"Error: The Honeybadger SDK does not currently support this platform.");
@@ -54,6 +61,7 @@ static Honeybadger* sharedInstance = nil;
     }
     
     hb.apiKey = [hb safeTrimmedStr:apiKey];
+    hb.customEnvironment = [hb safeTrimmedStr:environment];
     [hb setExceptionHandler];
     hb.initialized = TRUE;
 }
@@ -499,7 +507,8 @@ void c_func_on_exception(NSException* e)
         if ( error ) {
             NSLog(@"Error: %@", error);
         } else {
-            NSLog(@"Honeybadger successful post: %@", response);
+            NSLog(@"Honeybadger successful report");
+            // NSLog(@"Honeybadger successful post: %@", response);
         }
     }];
 
@@ -550,6 +559,10 @@ void c_func_on_exception(NSException* e)
 
 - (NSString*) environment
 {
+    if ( self.customEnvironment && self.customEnvironment.length > 0 ) {
+        return self.customEnvironment;
+    }
+
 #if TARGET_OS_SIMULATOR
     return @"simulator";
 #elif DEBUG

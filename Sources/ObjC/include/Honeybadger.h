@@ -14,6 +14,9 @@ NS_ASSUME_NONNULL_BEGIN
 + (void) configureWithAPIKey:(NSString*)apiKey
 NS_SWIFT_NAME(configure(apiKey:));
 
++ (void) configureWithAPIKey:(NSString*)apiKey environment:(NSString*)environment
+NS_SWIFT_NAME(configure(apiKey:environment:));
+
 + (void) notifyWithString:(NSString*)errorString
 NS_SWIFT_NAME(notify(errorString:));
 
