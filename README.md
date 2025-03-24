@@ -1,6 +1,6 @@
-# Honeybadger for iOS and macOS
+# Honeybadger for iOS, macOS, and visionOS
 
-An SDK for integrating [Honeybadger](https://honeybadger.io) into your iOS and macOS apps. This SDK can be used in both Swift and Objective-C projects.
+An SDK for integrating [Honeybadger](https://honeybadger.io) into your iOS, macOS, and visionOS apps. This SDK can be used in both Swift and Objective-C projects.
 
 ## Installation
 

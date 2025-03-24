@@ -1,5 +1,5 @@
 //
-// Honeybadger iOS/macOS
+// Honeybadger iOS/macOS/visionOS
 //
 
 
@@ -10,13 +10,24 @@
 #include <mach-o/dyld.h>
 #include <dlfcn.h>
 
-#if TARGET_OS_IOS
+#if (TARGET_OS_IOS || TARGET_OS_VISION)
     #import <UIKit/UIKit.h>
 #endif
 
 
 
-#define HONEYBADGER_APPLE_SDK_VERSION   @"1.0.1"
+#define HONEYBADGER_APPLE_SDK_VERSION   @"1.1.0"
+
+
+#if TARGET_OS_IOS
+static NSString * const shortPlatformName = @"iOS";
+#elif TARGET_OS_OSX
+static NSString * const shortPlatformName = @"macOS";
+#elif TARGET_OS_VISION
+static NSString * const shortPlatformName = @"visionOS";
+#else
+static NSString * const shortPlatformName = @"unknown";
+#endif
 
 
 
@@ -406,7 +417,6 @@ void c_func_on_exception(NSException* e)
 }
 
 
-
 - (NSString*) safeTrimmedStr:(NSString*)str
 {
     return [[self safe:str] stringByTrimmingCharactersInSet:
@@ -447,7 +457,7 @@ void c_func_on_exception(NSException* e)
 - (NSDictionary*) buildPayload:(NSDictionary*)data
 {
     NSMutableDictionary* errorObj = [NSMutableDictionary dictionaryWithDictionary:@{
-        @"class" : [self stringValueForKey:@"errorClass" fromDictionary:data defaultValue:@"iOS Error"],
+        @"class" : [self stringValueForKey:@"errorClass" fromDictionary:data defaultValue:[NSString stringWithFormat:@"%@ Error", shortPlatformName]],
         @"message" : [self stringValueForKey:@"errorMsg" fromDictionary:data defaultValue:@"Unknown Error"],
         @"backtrace" : data[@"backTrace"] ? data[@"backTrace"] : @{}
     }];
@@ -475,7 +485,7 @@ void c_func_on_exception(NSException* e)
     NSString* details = [self stringValueForKey:@"details" fromDictionary:data defaultValue:@""];
     if ( details.length > 0 ) {
         payload[@"details"] = @{
-            @"iOS" : details
+            shortPlatformName : details
         };
     }
 
@@ -537,7 +547,7 @@ void c_func_on_exception(NSException* e)
 
 - (NSString*) platformName
 {
-#if TARGET_OS_IOS
+#if (TARGET_OS_IOS || TARGET_OS_VISION)
     return [[UIDevice currentDevice] systemName];
 #elif TARGET_OS_OSX
     return @"macOS";
@@ -551,8 +561,8 @@ void c_func_on_exception(NSException* e)
 
 - (NSString*) platformVersion
 {
-#if TARGET_OS_IOS
-    return [[UIDevice currentDevice] systemVersion];
+#if (TARGET_OS_IOS || TARGET_OS_VISION)
+     return [[UIDevice currentDevice] systemVersion];
 #elif TARGET_OS_OSX
     return [[NSProcessInfo processInfo] operatingSystemVersionString];
 #else
@@ -603,7 +613,7 @@ void c_func_on_exception(NSException* e)
 
 - (BOOL) isSupportedPlatform
 {
-#if (TARGET_OS_IOS || TARGET_OS_OSX)
+#if (TARGET_OS_IOS || TARGET_OS_OSX || TARGET_OS_VISION)
     return TRUE;
 #endif
     return FALSE;

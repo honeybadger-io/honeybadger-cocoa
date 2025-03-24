@@ -1,4 +1,4 @@
-// swift-tools-version:5.3
+// swift-tools-version:5.10
 
 import PackageDescription
 
@@ -6,7 +6,8 @@ let package = Package(
     name: "Honeybadger",
     platforms: [
         .iOS(.v13),
-        .macOS(.v10_15)
+        .macOS(.v10_15),
+        .visionOS(.v1)
     ],
     products: [
         .library(
