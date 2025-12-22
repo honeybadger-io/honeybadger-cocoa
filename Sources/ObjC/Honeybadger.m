@@ -656,7 +656,7 @@ void c_func_on_exception(NSException* e)
     }
     
     // \d+\s+(?<moduleName>\S+)\s+(?<stackAddress>\S+)\s(?<loadAddress>.+)\s\+\s(?<symbolOffset>\d+)(\s+\((?<file>\S+):(?<line>\S+)\))?
-    NSString* pattern = @"\\d+\\s+(?<moduleName>\\S+)\\s+(?<stackAddress>\\S+)\\s(?<loadAddress>.+)\\s\\+\\s(?<symbolOffset>\\d+)";
+    NSString* pattern = @"\\d+\\s+(?<moduleName>\\S+)\\s+(?<stackAddress>\\S+)\\s(?<loadAddress>.+)\\s\\+\\s(?<symbolOffset>\\d+)(\\s+\\((?<file>\\S+):(?<line>\\S+)\\))?";
     
     NSError* error = nil;
     NSRegularExpression* regex = [NSRegularExpression regularExpressionWithPattern:pattern options:0 error:&error];
@@ -672,7 +672,20 @@ void c_func_on_exception(NSException* e)
         NSString* loadAddress = [line substringWithRange:[match rangeWithName:@"loadAddress"]];
         // NSString* symbolOffset = [line substringWithRange:[match rangeWithName:@"symbolOffset"]];
         
-        values[@"file"] = moduleName ? moduleName : @"";
+        // Extract file path and line number if available (optional in stack frame)
+        NSRange fileRange = [match rangeWithName:@"file"];
+        NSRange lineRange = [match rangeWithName:@"line"];
+        
+        if ( fileRange.location != NSNotFound && fileRange.length > 0 ) {
+            values[@"file"] = [line substringWithRange:fileRange];
+        } else {
+            values[@"file"] = moduleName ? moduleName : @"";
+        }
+        
+        if ( lineRange.location != NSNotFound && lineRange.length > 0 ) {
+            values[@"line"] = [line substringWithRange:lineRange];
+        }
+        
         values[@"method"] = loadAddress ? loadAddress : @"";
         values[@"stack_address"] = stackAdress ? stackAdress : @"";
     }
