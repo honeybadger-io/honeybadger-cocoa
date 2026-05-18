@@ -102,6 +102,16 @@ static void hb_install_appkit_exception_hook(void);
 
 + (void) configureWithAPIKey:(NSString*)apiKey environment:(NSString*)environment {
     Honeybadger* hb = [Honeybadger sharedInstance];
+
+    // Ignore repeat calls. Re-running configuration would re-install the
+    // exception and signal handlers, capturing Honeybadger's own handlers as
+    // the "previous" ones — which causes infinite recursion when chaining on
+    // the next crash.
+    if ( hb.initialized ) {
+        NSLog(@"Honeybadger is already configured; ignoring duplicate configureWithAPIKey: call.");
+        return;
+    }
+
     if ( ![hb isSupportedPlatform] ) {
         NSLog(@"Error: The Honeybadger SDK does not currently support this platform.");
         return;
@@ -462,7 +472,16 @@ void hb_signal_handler(int signal)
     for ( int i = 0; i < HB_SIGNAL_COUNT; i++ ) {
         if ( hb_signals[i] == signal ) {
             struct sigaction *prev = &hb_previous_signal_actions[i];
-            if ( prev->sa_handler == SIG_DFL ) {
+            if ( prev->sa_flags & SA_SIGINFO ) {
+                // The previous handler expects the 3-argument sa_sigaction
+                // calling convention. This handler is a plain sa_handler, so
+                // it has no siginfo_t/ucontext_t to forward, and calling
+                // sa_handler would invoke the wrong union member (undefined
+                // behavior). Restore the previous action and re-raise so the
+                // kernel delivers the signal with the correct convention.
+                sigaction(signal, prev, NULL);
+                raise(signal);
+            } else if ( prev->sa_handler == SIG_DFL ) {
                 struct sigaction defaultAction;
                 memset(&defaultAction, 0, sizeof(defaultAction));
                 defaultAction.sa_handler = SIG_DFL;
