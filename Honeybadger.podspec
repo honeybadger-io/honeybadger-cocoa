@@ -1,6 +1,6 @@
 Pod::Spec.new do |spec|
 	spec.name = "Honeybadger"
-  	spec.version = "1.1.0"
+  	spec.version = "1.2.0"
   	spec.summary = "Honeybadger.io for iOS, macOS, and visionOS"
   	spec.description = "This is the Honeybadger.io SDK for iOS, macOS, and visionOS"
   	spec.homepage = "https://honeybadger.io"
@@ -12,6 +12,9 @@ Pod::Spec.new do |spec|
   	spec.source = { :git => "https://github.com/honeybadger-io/honeybadger-cocoa.git", :tag => spec.version.to_s }
 	spec.default_subspecs = "Core"
 	spec.swift_version = '4.0'
+	# Keep the dSYM upload script in the installed pod so it can be invoked
+	# from an Xcode build phase at ${PODS_ROOT}/Honeybadger/bin/upload-dsyms.sh
+	spec.preserve_paths = "bin/upload-dsyms.sh"
 	spec.subspec "Core" do |subspec|
 		subspec.source_files = "Sources/ObjC/**/*.{h,m}"
 	end

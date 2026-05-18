@@ -5,10 +5,16 @@
 
 
 #import "Honeybadger.h"
+#import <objc/runtime.h>
 #include <execinfo.h>
 #import <mach-o/arch.h>
 #include <mach-o/dyld.h>
+#include <mach-o/loader.h>
 #include <dlfcn.h>
+#include <signal.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <limits.h>
 
 #if (TARGET_OS_IOS || TARGET_OS_VISION)
     #import <UIKit/UIKit.h>
@@ -16,7 +22,7 @@
 
 
 
-#define HONEYBADGER_APPLE_SDK_VERSION   @"1.1.0"
+#define HONEYBADGER_APPLE_SDK_VERSION   @"1.2.0"
 
 
 #if TARGET_OS_IOS
@@ -28,6 +34,35 @@ static NSString * const shortPlatformName = @"visionOS";
 #else
 static NSString * const shortPlatformName = @"unknown";
 #endif
+
+
+
+// -- SIGNAL HANDLING STATICS ----------------------------------------------
+
+#define HB_SIGNAL_COUNT 6
+static int hb_signals[HB_SIGNAL_COUNT] = { SIGABRT, SIGSEGV, SIGBUS, SIGFPE, SIGILL, SIGTRAP };
+static struct sigaction hb_previous_signal_actions[HB_SIGNAL_COUNT];
+static char hb_signal_crash_file_path[PATH_MAX];
+static NSUncaughtExceptionHandler *hb_previous_exception_handler = NULL;
+
+#if TARGET_OS_OSX
+static IMP hb_original_report_exception = NULL;
+#endif
+
+typedef struct {
+    int signal_number;
+    int address_count;
+    void *addresses[128];
+} HBSignalCrashData;
+
+void hb_exception_handler(NSException *exception);
+void hb_signal_handler(int signal);
+static void hb_capture_exception(NSException *exception, NSString *handlerName);
+#if TARGET_OS_OSX
+static void hb_install_appkit_exception_hook(void);
+#endif
+
+// -------------------------------------------------------------------------
 
 
 
@@ -44,9 +79,15 @@ static NSString * const shortPlatformName = @"unknown";
 
 @implementation Honeybadger
 
-// -- SINGLETON ------------------------------------------------------------
-static Honeybadger* sharedInstance = nil;
-+ (Honeybadger*) sharedInstance { if ( sharedInstance == nil ) { sharedInstance = [[super allocWithZone:NULL] init]; } return sharedInstance; }
+// -- SINGLETON (thread-safe via dispatch_once) ----------------------------
++ (Honeybadger*) sharedInstance {
+    static Honeybadger* instance = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        instance = [[super allocWithZone:NULL] init];
+    });
+    return instance;
+}
 + (id) allocWithZone:(NSZone*)zone { return [self sharedInstance]; }
 - (id) copyWithZone:(NSZone*)zone { return self; }
 // -------------------------------------------------------------------------
@@ -70,11 +111,14 @@ static Honeybadger* sharedInstance = nil;
         [hb informUserOfInvalidAPIKey];
         return;
     }
-    
+
     hb.apiKey = [hb safeTrimmedStr:apiKey];
     hb.customEnvironment = [hb safeTrimmedStr:environment];
+    [hb setupCrashReportDirectory];
     [hb setExceptionHandler];
+    [hb installSignalHandlers];
     hb.initialized = TRUE;
+    [hb sendPendingCrashReports];
 }
 
 
@@ -115,14 +159,14 @@ static Honeybadger* sharedInstance = nil;
     fingerprint:(NSString*)fingerprint
 {
     Honeybadger* hb = [Honeybadger sharedInstance];
-    
+
     if ( ![hb isValidAPIKey:hb.apiKey] ) {
         [hb informUserOfInvalidAPIKey];
         return;
     }
-    
+
     message = [hb safeTrimmedStr:message];
-    
+
     if ( message.length == 0 ) {
         NSLog(@"Error: Honeybadger notifyWithString - invalid message");
         return;
@@ -178,14 +222,14 @@ static Honeybadger* sharedInstance = nil;
     fingerprint:(NSString*)fingerprint
 {
     if ( !error ) return;
-    
+
     Honeybadger* hb = [Honeybadger sharedInstance];
-    
+
     if ( ![hb isValidAPIKey:hb.apiKey] ) {
         [hb informUserOfInvalidAPIKey];
         return;
     }
-    
+
     NSMutableDictionary<NSString*, NSString*>* contextForThisError = [hb merge:hb.context with:(context ? context : @{})];
 
     fingerprint = [hb safeTrimmedStr:fingerprint];
@@ -215,10 +259,9 @@ static Honeybadger* sharedInstance = nil;
 
 
 
-+ (void) resetContext:(NSDictionary<NSString*, NSString*>*)context
++ (void) resetContext
 {
-    [Honeybadger sharedInstance].context =
-        [NSMutableDictionary dictionaryWithDictionary:(context ? context : @{})];
+    [Honeybadger sharedInstance].context = [NSMutableDictionary dictionary];
 }
 
 
@@ -228,14 +271,14 @@ static Honeybadger* sharedInstance = nil;
 - (id) init
 {
     self = [super init];
-    
+
     if ( self )
     {
         _apiKey = @"";
         _initialized = FALSE;
         _context = [NSMutableDictionary dictionary];
     }
-    
+
     return self;
 }
 
@@ -255,80 +298,305 @@ static Honeybadger* sharedInstance = nil;
 
 
 
+// -- CRASH REPORT DIRECTORY -----------------------------------------------
+
+- (NSString*) crashReportDirectory
+{
+    NSArray* paths = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES);
+    NSString* cachesDir = paths.firstObject;
+    return [cachesDir stringByAppendingPathComponent:@"HoneybadgerCrashReports"];
+}
+
+- (void) setupCrashReportDirectory
+{
+    NSString* dir = [self crashReportDirectory];
+    NSFileManager* fm = [NSFileManager defaultManager];
+    if ( ![fm fileExistsAtPath:dir] ) {
+        [fm createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
+    }
+
+    // Pre-compute signal crash file path as a C string for async-signal-safe access
+    NSString* signalPath = [dir stringByAppendingPathComponent:@"signal_crash.bin"];
+    strlcpy(hb_signal_crash_file_path, [signalPath fileSystemRepresentation], PATH_MAX);
+}
+
+
+
+// -- EXCEPTION HANDLER ----------------------------------------------------
+
 - (void) setExceptionHandler
 {
-    [NSNotificationCenter.defaultCenter removeObserver:self];
-    
-    [NSNotificationCenter.defaultCenter
-        addObserver: self
-        selector:@selector(onCFuncCaughtException:)
-        name: @"notification-c-func-caught-exception"
-        object: nil];
-        
-    NSSetUncaughtExceptionHandler(&c_func_on_exception);
+#if TARGET_OS_OSX
+    // On macOS, AppKit's event loop wraps every event handler (e.g. button
+    // actions) in its own try/catch. Exceptions thrown there are caught by
+    // AppKit, so they never become "uncaught" and NSUncaughtExceptionHandler
+    // never sees them. hb_install_appkit_exception_hook() hooks AppKit's
+    // -[NSApplication reportException:] so Honeybadger captures them anyway.
+    //
+    // NSApplicationCrashOnExceptions makes AppKit terminate the app after such
+    // an exception (rather than swallowing it and continuing in a bad state).
+    // registerDefaults: only applies when the host app has not set its own
+    // value, so an explicit app setting still wins.
+    [[NSUserDefaults standardUserDefaults] registerDefaults:@{ @"NSApplicationCrashOnExceptions" : @YES }];
+    hb_install_appkit_exception_hook();
+#endif
 
-    [NSNotificationCenter.defaultCenter
-        addObserver:self
-        selector:@selector(onCFuncCaughtSignal:)
-        name:@"notification-c-func-caught-signal"
-        object:nil];
+    hb_previous_exception_handler = NSGetUncaughtExceptionHandler();
+    NSSetUncaughtExceptionHandler(&hb_exception_handler);
 }
 
-
-
-- (void) onCFuncCaughtException:(NSNotification*)notification
+// Builds a Honeybadger notice from an NSException and persists it to disk.
+// Shared by the uncaught-exception handler and, on macOS, the AppKit
+// -[NSApplication reportException:] hook.
+static void hb_capture_exception(NSException *exception, NSString *handlerName)
 {
-    if ( !notification || !notification.userInfo ) {
-        return;
-    }
-    
-    NSException* e = notification.userInfo[@"exception"];
-    
-    if ( e )
-    {
-        [self processEvent:@{
-            @"type" : @"Exception",
-            @"name" : [self safe:e.name],
-            @"reason" : [self safe:e.reason],
-            @"userInfo" : e.userInfo ? e.userInfo : @{},
-            @"callStackSymbols" : e.callStackSymbols ? e.callStackSymbols : @[],
-            @"initialHandler" : [self stringValueForKey:@"initialHandler" fromDictionary:notification.userInfo defaultValue:@"onCFuncCaughtException"]
-        }];
-    }
-}
-
-
-
-- (void) onCFuncCaughtSignal:(NSNotification*)notification
-{
-    if ( notification && notification.userInfo ) {
-        [self processEvent:@{
-            @"type" : @"Signal",
-            @"initialHandler" : [self stringValueForKey:@"initialHandler" fromDictionary:notification.userInfo defaultValue:@"onCFuncCaughtSignal"]
-        }];
-    }
-}
-
-
-
-void c_func_on_exception(NSException* e)
-{
-    if ( !e ) {
+    if ( !exception ) {
         return;
     }
 
-    [NSNotificationCenter.defaultCenter
-        postNotificationName:@"notification-c-func-caught-exception"
-        object:nil
-        userInfo:@{
-            @"exception" : e,
-            @"initialHandler" : @"c_func_on_exception"
+    Honeybadger* hb = [Honeybadger sharedInstance];
+
+    [hb processEvent:@{
+        @"type" : @"Exception",
+        @"name" : [hb safe:exception.name],
+        @"reason" : [hb safe:exception.reason],
+        @"userInfo" : exception.userInfo ? exception.userInfo : @{},
+        @"callStackSymbols" : exception.callStackSymbols ? exception.callStackSymbols : @[],
+        @"initialHandler" : handlerName
+    } persistOnly:YES];
+}
+
+void hb_exception_handler(NSException *exception)
+{
+    if ( !exception ) {
+        if ( hb_previous_exception_handler ) {
+            hb_previous_exception_handler(exception);
         }
-    ];
+        return;
+    }
+
+    hb_capture_exception(exception, @"hb_exception_handler");
+
+    if ( hb_previous_exception_handler ) {
+        hb_previous_exception_handler(exception);
+    }
 }
 
+#if TARGET_OS_OSX
+
+// AppKit's main event loop wraps every event handler in a try/catch. An
+// NSException thrown there is caught by AppKit, so it never becomes an
+// "uncaught" exception — NSUncaughtExceptionHandler never sees it. AppKit
+// instead routes it through -[NSApplication reportException:]. We replace
+// that method's implementation so Honeybadger can capture the exception
+// in-process, at crash time, with an accurate backtrace and binary images.
+static void hb_swizzled_report_exception(id self, SEL _cmd, NSException *exception)
+{
+    hb_capture_exception(exception, @"reportException");
+
+    // Call through to the original -[NSApplication reportException:].
+    if ( hb_original_report_exception ) {
+        ((void (*)(id, SEL, NSException *))hb_original_report_exception)(self, _cmd, exception);
+    }
+}
+
+static void hb_install_appkit_exception_hook(void)
+{
+    // Guarded so repeated configureWithAPIKey: calls cannot swap twice
+    // (which would restore the original implementation).
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        // Resolve NSApplication at runtime so the SDK carries no AppKit link
+        // dependency. A macOS host with no AppKit simply skips the hook.
+        Class appClass = NSClassFromString(@"NSApplication");
+        if ( !appClass ) {
+            return;
+        }
+        Method method = class_getInstanceMethod(appClass, @selector(reportException:));
+        if ( !method ) {
+            return;
+        }
+        hb_original_report_exception = method_getImplementation(method);
+        method_setImplementation(method, (IMP)hb_swizzled_report_exception);
+    });
+}
+
+#endif
+
+
+
+// -- SIGNAL HANDLERS ------------------------------------------------------
+
+- (void) installSignalHandlers
+{
+    for ( int i = 0; i < HB_SIGNAL_COUNT; i++ ) {
+        struct sigaction action;
+        memset(&action, 0, sizeof(action));
+        sigemptyset(&action.sa_mask);
+        action.sa_handler = hb_signal_handler;
+        sigaction(hb_signals[i], &action, &hb_previous_signal_actions[i]);
+    }
+}
+
+void hb_signal_handler(int signal)
+{
+    // Write crash data using async-signal-safe POSIX I/O only
+    HBSignalCrashData crashData;
+    memset(&crashData, 0, sizeof(crashData));
+    crashData.signal_number = signal;
+
+    void *addresses[128];
+    int count = backtrace(addresses, 128);
+    crashData.address_count = count;
+    for ( int i = 0; i < count && i < 128; i++ ) {
+        crashData.addresses[i] = addresses[i];
+    }
+
+    int fd = open(hb_signal_crash_file_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if ( fd >= 0 ) {
+        write(fd, &crashData, sizeof(crashData));
+        close(fd);
+    }
+
+    // Chain to previous handler
+    for ( int i = 0; i < HB_SIGNAL_COUNT; i++ ) {
+        if ( hb_signals[i] == signal ) {
+            struct sigaction *prev = &hb_previous_signal_actions[i];
+            if ( prev->sa_handler == SIG_DFL ) {
+                struct sigaction defaultAction;
+                memset(&defaultAction, 0, sizeof(defaultAction));
+                defaultAction.sa_handler = SIG_DFL;
+                sigaction(signal, &defaultAction, NULL);
+                raise(signal);
+            } else if ( prev->sa_handler != SIG_IGN ) {
+                prev->sa_handler(signal);
+            }
+            break;
+        }
+    }
+}
+
+- (NSString*) signalName:(int)sig
+{
+    switch ( sig ) {
+        case SIGABRT: return @"SIGABRT";
+        case SIGSEGV: return @"SIGSEGV";
+        case SIGBUS:  return @"SIGBUS";
+        case SIGFPE:  return @"SIGFPE";
+        case SIGILL:  return @"SIGILL";
+        case SIGTRAP: return @"SIGTRAP";
+        default:      return @"UNKNOWN";
+    }
+}
+
+
+
+// -- PENDING CRASH REPORTS ------------------------------------------------
+
+- (void) sendPendingCrashReports
+{
+    NSString* dir = [self crashReportDirectory];
+    NSFileManager* fm = [NSFileManager defaultManager];
+    NSArray* files = [fm contentsOfDirectoryAtPath:dir error:nil];
+
+    for ( NSString* filename in files ) {
+        NSString* path = [dir stringByAppendingPathComponent:filename];
+
+        if ( [filename hasSuffix:@".json"] ) {
+            NSData* data = [NSData dataWithContentsOfFile:path];
+            if ( data ) {
+                [self sendPayloadData:data filePath:path];
+            }
+        } else if ( [filename hasSuffix:@".bin"] ) {
+            NSData* data = [NSData dataWithContentsOfFile:path];
+            if ( data && data.length >= sizeof(HBSignalCrashData) ) {
+                HBSignalCrashData crashData;
+                [data getBytes:&crashData length:sizeof(HBSignalCrashData)];
+                NSDictionary* payload = [self buildPayloadFromSignalCrashData:&crashData];
+                if ( payload ) {
+                    NSData* jsonData = [self toNSData:payload];
+                    if ( jsonData ) {
+                        // Convert the binary crash file to a JSON report on disk,
+                        // then send from the JSON path. This ensures the report
+                        // survives if the send fails (picked up on the next launch).
+                        NSString* jsonPath = [[path stringByDeletingPathExtension]
+                                              stringByAppendingPathExtension:@"json"];
+                        [jsonData writeToFile:jsonPath atomically:YES];
+                        [fm removeItemAtPath:path error:nil];
+                        [self sendPayloadData:jsonData filePath:jsonPath];
+                    }
+                }
+            }
+        }
+    }
+}
+
+- (NSDictionary*) buildPayloadFromSignalCrashData:(HBSignalCrashData*)crashData
+{
+    NSMutableArray* frames = [NSMutableArray array];
+    for ( int i = 0; i < crashData->address_count; i++ ) {
+        NSString* addressStr = [NSString stringWithFormat:@"0x%lx", (unsigned long)crashData->addresses[i]];
+
+        Dl_info info;
+        if ( dladdr(crashData->addresses[i], &info) ) {
+            [frames addObject:@{
+                @"file" : info.dli_fname ? [NSString stringWithUTF8String:info.dli_fname] : @"",
+                @"method" : info.dli_sname ? [NSString stringWithUTF8String:info.dli_sname] : addressStr,
+                @"number" : @"",
+                @"address" : addressStr
+            }];
+        } else {
+            [frames addObject:@{
+                @"file" : @"",
+                @"method" : addressStr,
+                @"number" : @"",
+                @"address" : addressStr
+            }];
+        }
+    }
+
+    NSString* signalName = [self signalName:crashData->signal_number];
+    NSString* errorClass = [NSString stringWithFormat:@"%@ Signal", shortPlatformName];
+
+    NSMutableDictionary* payload = [NSMutableDictionary dictionaryWithDictionary:@{
+        @"notifier" : @{
+            @"name" : @"Honeybadger Cocoa Notifier",
+            @"url" : @"https://github.com/honeybadger-io/honeybadger-cocoa",
+            @"version" : HONEYBADGER_APPLE_SDK_VERSION
+        },
+        @"error" : @{
+            @"class" : errorClass,
+            @"message" : [NSString stringWithFormat:@"Signal %@ (%d)", signalName, crashData->signal_number],
+            @"backtrace" : frames
+        },
+        @"request" : @{
+            @"context" : _context ? _context : @{}
+        },
+        @"server" : @{
+            @"environment_name" : [self environment],
+            @"hostname" : [[NSProcessInfo processInfo] hostName],
+            @"pid" : @([[NSProcessInfo processInfo] processIdentifier])
+        }
+    }];
+
+    NSArray* binaryImages = [self captureBinaryImages];
+    if ( binaryImages ) {
+        payload[@"binary_images"] = binaryImages;
+    }
+
+    return payload;
+}
+
+
+
+// -- PROCESS EVENT --------------------------------------------------------
 
 - (void) processEvent:(NSDictionary*)data
+{
+    [self processEvent:data persistOnly:NO];
+}
+
+- (void) processEvent:(NSDictionary*)data persistOnly:(BOOL)persistOnly
 {
     // Do we have a custom error class name provided by the user?
     NSString* errorClass = [self stringValueForKey:@"customErrorClass" fromDictionary:data defaultValue:@""];
@@ -351,7 +619,13 @@ void c_func_on_exception(NSException* e)
         @"backTrace" : [self framesFromCallStack:data]
     };
 
-    [self sendToHoneybadger:[self buildPayload:payloadData]];
+    NSDictionary* payload = [self buildPayload:payloadData];
+
+    if ( persistOnly ) {
+        [self persistPayloadToDisk:payload];
+    } else {
+        [self sendToHoneybadger:payload];
+    }
 }
 
 
@@ -359,7 +633,7 @@ void c_func_on_exception(NSException* e)
 - (NSArray<NSDictionary*>*) framesFromCallStack:(NSDictionary*)data
 {
     NSArray<NSString*>* stackLines = @[];
-    
+
     if ( data[@"onNotifyCallStackSymbols"] ) {
         stackLines = data[@"onNotifyCallStackSymbols"];
     }
@@ -378,7 +652,7 @@ void c_func_on_exception(NSException* e)
     for ( NSString* line in stackLines ) {
         [frames addObject:[self extractValuesFromStackFrame:line]];
     }
-    
+
     return frames;
 }
 
@@ -386,10 +660,10 @@ void c_func_on_exception(NSException* e)
 
 - (NSString*) errorMessageFromEventData:(NSDictionary*)data {
     if ( !data ) return @"";
-    
+
     NSString* errorMsg = [self safeTrimmedStr:data[@"errorMsg"]];
     if ( errorMsg.length > 0 ) return errorMsg;
-    
+
     NSString* localizedDescription = [self safeTrimmedStr:data[@"localizedDescription"]];
     if ( localizedDescription.length > 0 ) {
         NSUInteger startOfCallStackIndex = [localizedDescription rangeOfString:@"callstack: (\n"].location;
@@ -400,13 +674,13 @@ void c_func_on_exception(NSException* e)
             return [self safeTrimmedStr:[localizedDescription substringToIndex:startOfCallStackIndex]];
         }
     }
-    
+
     NSString* name = [self safeTrimmedStr:data[@"name"]];
     NSString* reason = [self safeTrimmedStr:data[@"reason"]];
     if ( name.length > 0 || reason.length > 0 ) {
         return [self safeTrimmedStr:[NSString stringWithFormat:@"%@ : %@", name, reason]];
     }
-    
+
     return @"";
 }
 
@@ -426,7 +700,7 @@ void c_func_on_exception(NSException* e)
 
 - (NSString*) stringValueForKey:(NSString*)key fromDictionary:(NSDictionary*)dict defaultValue:(NSString*)defaultValue {
     if ( !dict ) return defaultValue;
-    
+
     NSObject* obj = [dict objectForKey:key];
     if ( !obj ) return defaultValue;
 
@@ -440,26 +714,28 @@ void c_func_on_exception(NSException* e)
 - (NSMutableDictionary*) merge:(NSDictionary*)dict1 with:(NSDictionary*)dict2
 {
     NSMutableDictionary* mergedDictionary = [NSMutableDictionary dictionary];
-    
+
     if ( dict1 ) {
         [mergedDictionary addEntriesFromDictionary:dict1];
     }
-    
+
     if ( dict2 ) {
         [mergedDictionary addEntriesFromDictionary:dict2];
     }
-    
+
     return mergedDictionary;
 }
 
 
+
+// -- BUILD PAYLOAD --------------------------------------------------------
 
 - (NSDictionary*) buildPayload:(NSDictionary*)data
 {
     NSMutableDictionary* errorObj = [NSMutableDictionary dictionaryWithDictionary:@{
         @"class" : [self stringValueForKey:@"errorClass" fromDictionary:data defaultValue:[NSString stringWithFormat:@"%@ Error", shortPlatformName]],
         @"message" : [self stringValueForKey:@"errorMsg" fromDictionary:data defaultValue:@"Unknown Error"],
-        @"backtrace" : data[@"backTrace"] ? data[@"backTrace"] : @{}
+        @"backtrace" : data[@"backTrace"] ? data[@"backTrace"] : @[]
     }];
 
     NSString* fingerprint = [self stringValueForKey:@"fingerprint" fromDictionary:data defaultValue:@""];
@@ -478,15 +754,23 @@ void c_func_on_exception(NSException* e)
             @"context" : data[@"context"] ? data[@"context"] : @{}
         },
         @"server" : @{
-            @"environment_name" : [self environment]
+            @"environment_name" : [self environment],
+            @"hostname" : [[NSProcessInfo processInfo] hostName],
+            @"pid" : @([[NSProcessInfo processInfo] processIdentifier])
         }
     }];
-    
-    NSString* details = [self stringValueForKey:@"details" fromDictionary:data defaultValue:@""];
-    if ( details.length > 0 ) {
+
+    // Fix: use direct dictionary access instead of stringValueForKey: (details is an NSDictionary)
+    id details = data[@"details"];
+    if ( details && [details isKindOfClass:[NSDictionary class]] ) {
         payload[@"details"] = @{
             shortPlatformName : details
         };
+    }
+
+    NSArray* binaryImages = [self captureBinaryImages];
+    if ( binaryImages ) {
+        payload[@"binary_images"] = binaryImages;
     }
 
     return payload;
@@ -494,22 +778,41 @@ void c_func_on_exception(NSException* e)
 
 
 
+// -- PERSIST & SEND -------------------------------------------------------
+
+- (void) persistPayloadToDisk:(NSDictionary*)payload
+{
+    NSData* data = [self toNSData:payload];
+    if ( !data ) return;
+
+    NSString* filename = [NSString stringWithFormat:@"crash_%f.json", [[NSDate date] timeIntervalSince1970]];
+    NSString* path = [[self crashReportDirectory] stringByAppendingPathComponent:filename];
+    [data writeToFile:path atomically:YES];
+}
+
 - (void) sendToHoneybadger:(NSDictionary*)payload
 {
     if ( !payload || ![self isValidAPIKey:_apiKey] ) {
         return;
     }
-    
-    // NSLog(@"SENDING: %@", payload);
-    
+
     NSData* dataToSend = [self toNSData:payload];
     if ( !dataToSend ) {
         return;
     }
 
-    NSString* url = @"https://api.honeybadger.io/v1/notices/js";
-    // url = @"https://7430698f8d32.ngrok.io";
-    
+    // Persist to disk first so data survives if the process dies before the network request completes
+    NSString* filename = [NSString stringWithFormat:@"crash_%f.json", [[NSDate date] timeIntervalSince1970]];
+    NSString* filePath = [[self crashReportDirectory] stringByAppendingPathComponent:filename];
+    [dataToSend writeToFile:filePath atomically:YES];
+
+    [self sendPayloadData:dataToSend filePath:filePath];
+}
+
+- (void) sendPayloadData:(NSData*)dataToSend filePath:(NSString*)filePath
+{
+    NSString* url = @"https://api.honeybadger.io/v1/notices";
+
     NSMutableURLRequest* request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:url]];
     [request setHTTPMethod:@"POST"];
     [request setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
@@ -517,14 +820,20 @@ void c_func_on_exception(NSException* e)
     [request setValue:_apiKey forHTTPHeaderField:@"X-API-Key"];
     [request setValue:[self buildUserAgent] forHTTPHeaderField:@"User-Agent"];
     [request setHTTPBody:dataToSend];
-    
+
     NSURLSession* session = [NSURLSession sharedSession];
     NSURLSessionDataTask* task = [session dataTaskWithRequest:request completionHandler:^(NSData* data, NSURLResponse* response, NSError* error) {
-        if ( error ) {
-            NSLog(@"Error: %@", error);
-        } else {
+        NSHTTPURLResponse* httpResponse = (NSHTTPURLResponse*)response;
+        BOOL success = !error && httpResponse.statusCode >= 200 && httpResponse.statusCode < 300;
+        if ( success ) {
             NSLog(@"Honeybadger successful report");
-            // NSLog(@"Honeybadger successful post: %@", response);
+            if ( filePath ) {
+                [[NSFileManager defaultManager] removeItemAtPath:filePath error:nil];
+            }
+        } else {
+            NSLog(@"Honeybadger report error: %@ (HTTP %ld)",
+                  error ? error.localizedDescription : @"server error",
+                  (long)httpResponse.statusCode);
         }
     }];
 
@@ -538,7 +847,7 @@ void c_func_on_exception(NSException* e)
     NSString* clientVersion = HONEYBADGER_APPLE_SDK_VERSION;
     NSString* platformName = [self platformName];
     NSString* platformVersion = [self platformVersion];
-    
+
     return [NSString stringWithFormat:@"%@ %@; %@; %@",
         clientName, clientVersion, platformVersion, platformName];
 }
@@ -581,8 +890,6 @@ void c_func_on_exception(NSException* e)
 
 #if TARGET_OS_SIMULATOR
     return @"simulator";
-#elif DEBUG
-    return @"development";
 #else
     return @"production";
 #endif
@@ -594,13 +901,13 @@ void c_func_on_exception(NSException* e)
 {
     @try
     {
-        NSData* jsonData = [NSJSONSerialization dataWithJSONObject:dict options:0 error:nil];
-        if (!jsonData) return nil;
-        // NSJSONSerializes automatically escapes forward slashes; we revert this behavior:
-        NSString* jsonStr = [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
-        NSString* cleanJSONStr = [jsonStr stringByReplacingOccurrencesOfString:@"\\/" withString:@"/"];
-        // Now back to data
-        return [cleanJSONStr dataUsingEncoding:NSUTF8StringEncoding];
+        NSError* error = nil;
+        NSData* jsonData = [NSJSONSerialization dataWithJSONObject:dict options:NSJSONWritingWithoutEscapingSlashes error:&error];
+        if ( error ) {
+            NSLog(@"HB Error: JSON serialization failed: %@", error);
+            return nil;
+        }
+        return jsonData;
     }
     @catch (NSException* exception)
     {
@@ -640,44 +947,100 @@ void c_func_on_exception(NSException* e)
 {
     NSMutableDictionary* values = [NSMutableDictionary dictionaryWithDictionary:@{
         @"file" : @"",
-        @"line" : @"",
+        @"number" : @"",
         @"method" : @"",
-        @"stack_address" : @""
+        @"address" : @""
     }];
-    
+
     if ( !line ) {
         return values;
     }
-    
+
     line = [self safeTrimmedStr:line];
-    
+
     if ( line.length == 0 ) {
         return values;
     }
-    
-    // \d+\s+(?<moduleName>\S+)\s+(?<stackAddress>\S+)\s(?<loadAddress>.+)\s\+\s(?<symbolOffset>\d+)(\s+\((?<file>\S+):(?<line>\S+)\))?
+
     NSString* pattern = @"\\d+\\s+(?<moduleName>\\S+)\\s+(?<stackAddress>\\S+)\\s(?<loadAddress>.+)\\s\\+\\s(?<symbolOffset>\\d+)";
-    
+
     NSError* error = nil;
     NSRegularExpression* regex = [NSRegularExpression regularExpressionWithPattern:pattern options:0 error:&error];
     if ( error ) {
         NSLog(@"HB Error: %@", error);
         return values;
     }
-    
+
     NSArray* matches = [regex matchesInString:line options:0 range:NSMakeRange(0, line.length)];
     for ( NSTextCheckingResult* match in matches ) {
         NSString* moduleName = [line substringWithRange:[match rangeWithName:@"moduleName"]];
-        NSString* stackAdress = [line substringWithRange:[match rangeWithName:@"stackAddress"]];
+        NSString* stackAddress = [line substringWithRange:[match rangeWithName:@"stackAddress"]];
         NSString* loadAddress = [line substringWithRange:[match rangeWithName:@"loadAddress"]];
-        // NSString* symbolOffset = [line substringWithRange:[match rangeWithName:@"symbolOffset"]];
-        
+
         values[@"file"] = moduleName ? moduleName : @"";
         values[@"method"] = loadAddress ? loadAddress : @"";
-        values[@"stack_address"] = stackAdress ? stackAdress : @"";
+        values[@"address"] = stackAddress ? stackAddress : @"";
     }
-    
+
     return values;
+}
+
+
+
+// -- BINARY IMAGE CAPTURE -------------------------------------------------
+
+- (NSArray*) captureBinaryImages
+{
+    NSMutableArray* images = [NSMutableArray array];
+
+    uint32_t count = _dyld_image_count();
+    for ( uint32_t i = 0; i < count; i++ ) {
+        const struct mach_header* header = _dyld_get_image_header(i);
+        if ( !header ) continue;
+
+        const char* name = _dyld_get_image_name(i);
+        intptr_t slide = _dyld_get_image_vmaddr_slide(i);
+
+        // Walk Mach-O load commands to find LC_UUID
+        NSString* uuidStr = nil;
+        NSString* archStr = nil;
+
+        BOOL is64 = (header->magic == MH_MAGIC_64 || header->magic == MH_CIGAM_64);
+        uintptr_t cursor = (uintptr_t)header + (is64 ? sizeof(struct mach_header_64) : sizeof(struct mach_header));
+
+        for ( uint32_t j = 0; j < header->ncmds; j++ ) {
+            const struct load_command* cmd = (const struct load_command*)cursor;
+            if ( cmd->cmd == LC_UUID ) {
+                const struct uuid_command* uuidCmd = (const struct uuid_command*)cursor;
+                const uint8_t* uuid = uuidCmd->uuid;
+                uuidStr = [NSString stringWithFormat:
+                    @"%02X%02X%02X%02X-%02X%02X-%02X%02X-%02X%02X-%02X%02X%02X%02X%02X%02X",
+                    uuid[0], uuid[1], uuid[2], uuid[3],
+                    uuid[4], uuid[5],
+                    uuid[6], uuid[7],
+                    uuid[8], uuid[9],
+                    uuid[10], uuid[11], uuid[12], uuid[13], uuid[14], uuid[15]];
+                break;
+            }
+            cursor += cmd->cmdsize;
+        }
+
+        const NXArchInfo* archInfo = NXGetArchInfoFromCpuType(header->cputype, header->cpusubtype);
+        if ( archInfo ) {
+            archStr = [NSString stringWithUTF8String:archInfo->name];
+        }
+
+        NSMutableDictionary* imageDict = [NSMutableDictionary dictionary];
+        imageDict[@"name"] = name ? [NSString stringWithUTF8String:name] : @"";
+        imageDict[@"load_address"] = [NSString stringWithFormat:@"0x%lx", (unsigned long)header];
+        imageDict[@"vmaddr_slide"] = [NSString stringWithFormat:@"0x%lx", (unsigned long)slide];
+        if ( uuidStr ) imageDict[@"uuid"] = uuidStr;
+        if ( archStr ) imageDict[@"arch"] = archStr;
+
+        [images addObject:imageDict];
+    }
+
+    return images;
 }
 
 @end

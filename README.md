@@ -294,8 +294,55 @@ Honeybadger.resetContext();
 #### Objective-C
 
 ```objc
-[Honeybadger setContext];
+[Honeybadger resetContext];
 ```
+
+## dSYM Upload for Symbolication
+
+When Xcode builds your app for distribution, it strips debug symbols from the binary to reduce file size. These symbols are saved separately in a `.dSYM` bundle alongside your build. Without uploading these bundles to Honeybadger, crash reports will show raw memory addresses instead of the function names, file names, and line numbers you need to diagnose the crash.
+
+Uploading dSYMs lets Honeybadger display fully symbolicated stack traces like:
+
+```
+triggerExceptionCrash()   ViewController.swift:42
+AppDelegate.application   AppDelegate.swift:18
+```
+
+The upload is handled by `bin/upload-dsyms.sh`. It automatically reads
+`DWARF_DSYM_FOLDER_PATH` (which Xcode sets during a build), so no extra
+configuration is needed. Store your API key in an Xcode build setting or
+environment variable rather than hardcoding it.
+
+### Xcode Build Phase (Recommended)
+
+Add the script as a Run Script build phase so dSYMs upload automatically whenever you archive a build:
+
+1. In Xcode, select your app target and go to **Build Phases**.
+2. Click **+** and select **New Run Script Phase**.
+3. Drag the new phase **below** the existing "Copy dSYMs" phase.
+4. Add the run script for your installation method (below).
+
+**CocoaPods** — the script is installed with the pod, so reference it from `${PODS_ROOT}`:
+
+```shell
+bash "${PODS_ROOT}/Honeybadger/bin/upload-dsyms.sh" --api-key "${HB_API_KEY}"
+```
+
+**Swift Package Manager** — SPM does not install standalone scripts to a referenceable location. Download `bin/upload-dsyms.sh` from this repository, add it to your project (e.g. at `Scripts/upload-dsyms.sh`), and reference it:
+
+```shell
+bash "${SRCROOT}/Scripts/upload-dsyms.sh" --api-key "${HB_API_KEY}"
+```
+
+### Manual / CI Upload
+
+To upload dSYMs manually or from a CI pipeline, run the script directly with an explicit path:
+
+```shell
+bash upload-dsyms.sh --api-key YOUR_API_KEY --dsym-path /path/to/dSYMs/
+```
+
+The script uploads all `.dSYM` bundles found in the specified directory.
 
 ## License
 

@@ -76,8 +76,8 @@ NS_SWIFT_NAME(notify(error:errorClass:context:fingerprint:));
 + (void) setContext:(NSDictionary<NSString*, NSString*>*)context
 NS_SWIFT_NAME(setContext(context:));
 
-+ (void) resetContext:(NSDictionary<NSString*, NSString*>*)context
-NS_SWIFT_NAME(resetContext(context:));
++ (void) resetContext
+NS_SWIFT_NAME(resetContext());
 
 @end
 
