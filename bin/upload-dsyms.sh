@@ -6,24 +6,31 @@
 # Can be used as an Xcode build phase or CI step.
 #
 # Usage:
-#   ./bin/upload-dsyms.sh --api-key <key> [--dsym-path <path>]
+#   ./bin/upload-dsyms.sh --api-key <key> [--dsym-path <path>] [--revision <revision>]
 #
 # If --dsym-path is not provided, falls back to Xcode's DWARF_DSYM_FOLDER_PATH.
+#
+# --revision is optional. If provided, it must match the revision configured in
+# the SDK (configure(apiKey:environment:revision:)) so uploaded dSYMs and the
+# errors they symbolicate share the same revision for release tracking.
 #
 
 set -euo pipefail
 
 API_KEY=""
 DSYM_PATH=""
+REVISION=""
 API_BASE="https://api.honeybadger.io"
 
 usage() {
-    echo "Usage: $0 --api-key <key> [--dsym-path <path>]"
+    echo "Usage: $0 --api-key <key> [--dsym-path <path>] [--revision <revision>]"
     echo ""
     echo "Options:"
     echo "  --api-key    Honeybadger API key (required)"
     echo "  --dsym-path  Path to directory containing .dSYM bundles"
     echo "               (defaults to Xcode's DWARF_DSYM_FOLDER_PATH)"
+    echo "  --revision   Optional revision/release identifier. Must match the"
+    echo "               revision configured in the SDK."
     exit 1
 }
 
@@ -35,6 +42,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --dsym-path)
             DSYM_PATH="$2"
+            shift 2
+            ;;
+        --revision)
+            REVISION="$2"
             shift 2
             ;;
         *)
@@ -97,11 +108,22 @@ while IFS= read -r dsym; do
 
     # Request a presigned upload URL from the API
     echo "    Requesting upload URL..."
+    # Build the JSON body with python3 (already a dependency below) so that
+    # filename and revision are properly escaped — a raw revision containing a
+    # quote or backslash would otherwise produce malformed JSON. revision is
+    # included only when non-empty.
+    REQUEST_BODY=$(python3 -c '
+import json, sys
+body = {"filename": sys.argv[1], "filesize": int(sys.argv[2])}
+if len(sys.argv) > 3 and sys.argv[3]:
+    body["revision"] = sys.argv[3]
+print(json.dumps(body))
+' "${DSYM_NAME}.zip" "$ZIP_SIZE" "$REVISION")
     RESPONSE=$(curl -s -w "\n%{http_code}" \
         -X POST \
         -H "X-API-Key: $API_KEY" \
         -H "Content-Type: application/json" \
-        -d "{\"filename\": \"${DSYM_NAME}.zip\", \"filesize\": $ZIP_SIZE}" \
+        -d "$REQUEST_BODY" \
         "$API_BASE/v1/dsyms")
 
     HTTP_CODE=$(echo "$RESPONSE" | tail -1)

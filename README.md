@@ -73,6 +73,27 @@ Honeybadger.configure(
 ];
 ```
 
+You can also supply an optional **revision** to track which release an error came from (e.g. a version string, build number, or git SHA). Use the same value when uploading dSYMs (see [dSYM Upload for Symbolication](#dsym-upload-for-symbolication)) so dSYMs and the errors they symbolicate are tagged with the same revision.
+
+#### Swift
+
+```swift
+Honeybadger.configure(
+	apiKey:"{{PROJECT_API_KEY}}",
+	environment:"Staging",
+	revision:"1.4.2"
+)
+```
+
+#### Objective-C
+```objc
+[Honeybadger 
+	configureWithAPIKey:@"{{PROJECT_API_KEY}}"
+	environment:@"Staging"
+	revision:@"1.4.2"
+];
+```
+
 
 ## Usage Examples
 Errors and exceptions will be automatically handled by the Honeybadger library, but you can also use the following API to customize error handling in your application.
@@ -343,6 +364,16 @@ bash upload-dsyms.sh --api-key YOUR_API_KEY --dsym-path /path/to/dSYMs/
 ```
 
 The script uploads all `.dSYM` bundles found in the specified directory.
+
+### Revision (optional)
+
+If you configure a **revision** in the SDK (the `revision:` parameter of `configure`), pass the **same value** to the upload script with `--revision` so the uploaded dSYMs and the errors they symbolicate share one revision:
+
+```shell
+bash upload-dsyms.sh --api-key YOUR_API_KEY --revision "1.4.2"
+```
+
+Revision is purely for release tracking — dSYM-to-crash matching is done by build UUID, so it works with or without a revision.
 
 ## License
 

@@ -19,6 +19,9 @@ NS_SWIFT_NAME(configure(apiKey:));
 + (void) configureWithAPIKey:(NSString*)apiKey environment:(NSString*)environment
 NS_SWIFT_NAME(configure(apiKey:environment:));
 
++ (void) configureWithAPIKey:(NSString*)apiKey environment:(NSString*)environment revision:(NSString*)revision
+NS_SWIFT_NAME(configure(apiKey:environment:revision:));
+
 // NOTIFY ------------------------------------------------------------------
 
 + (void) notifyWithString:(NSString*)errorString

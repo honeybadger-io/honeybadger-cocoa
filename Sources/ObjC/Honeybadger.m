@@ -15,6 +15,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <limits.h>
+#include <math.h>
 
 #if (TARGET_OS_IOS || TARGET_OS_VISION)
     #import <UIKit/UIKit.h>
@@ -45,6 +46,12 @@ static struct sigaction hb_previous_signal_actions[HB_SIGNAL_COUNT];
 static char hb_signal_crash_file_path[PATH_MAX];
 static NSUncaughtExceptionHandler *hb_previous_exception_handler = NULL;
 
+// Set once an NSException has been captured + persisted by the exception path.
+// The signal handler reads it (async-signal-safe via sig_atomic_t) to avoid
+// writing a duplicate report for the signal that merely tears the process down
+// afterward — AppKit's crash-on-exceptions trap (SIGTRAP) or abort() (SIGABRT).
+static volatile sig_atomic_t hb_exception_captured = 0;
+
 #if TARGET_OS_OSX
 static IMP hb_original_report_exception = NULL;
 #endif
@@ -70,6 +77,7 @@ static void hb_install_appkit_exception_hook(void);
 
 @property (nonatomic) NSString* apiKey;
 @property (nonatomic) NSString* customEnvironment;
+@property (nonatomic) NSString* customRevision;
 @property (nonatomic) BOOL initialized;
 @property (nonatomic) NSMutableDictionary<NSString*, NSString*>* context;
 
@@ -97,10 +105,14 @@ static void hb_install_appkit_exception_hook(void);
 // CONFIG ------------------------------------------------------------------
 
 + (void) configureWithAPIKey:(NSString*)apiKey {
-    [Honeybadger configureWithAPIKey:apiKey environment:@""];
+    [Honeybadger configureWithAPIKey:apiKey environment:@"" revision:@""];
 }
 
 + (void) configureWithAPIKey:(NSString*)apiKey environment:(NSString*)environment {
+    [Honeybadger configureWithAPIKey:apiKey environment:environment revision:@""];
+}
+
++ (void) configureWithAPIKey:(NSString*)apiKey environment:(NSString*)environment revision:(NSString*)revision {
     Honeybadger* hb = [Honeybadger sharedInstance];
 
     // Ignore repeat calls. Re-running configuration would re-install the
@@ -124,6 +136,7 @@ static void hb_install_appkit_exception_hook(void);
 
     hb.apiKey = [hb safeTrimmedStr:apiKey];
     hb.customEnvironment = [hb safeTrimmedStr:environment];
+    hb.customRevision = [hb safeTrimmedStr:revision];
     [hb setupCrashReportDirectory];
     [hb setExceptionHandler];
     [hb installSignalHandlers];
@@ -374,6 +387,12 @@ static void hb_capture_exception(NSException *exception, NSString *handlerName)
         @"callStackSymbols" : exception.callStackSymbols ? exception.callStackSymbols : @[],
         @"initialHandler" : handlerName
     } persistOnly:YES];
+
+    // Mark the exception as reported so the signal handler doesn't also write a
+    // redundant report for the teardown signal that follows (set only after the
+    // report is persisted, so a crash mid-persist still falls back to the
+    // signal path).
+    hb_exception_captured = 1;
 }
 
 void hb_exception_handler(NSException *exception)
@@ -448,8 +467,32 @@ static void hb_install_appkit_exception_hook(void)
     }
 }
 
+// Restores the previously installed action for `signal` and re-raises it so the
+// original handler (or the default action) runs. Async-signal-safe: uses only
+// sigaction() and raise().
+static void hb_chain_previous_signal(int signal)
+{
+    for ( int i = 0; i < HB_SIGNAL_COUNT; i++ ) {
+        if ( hb_signals[i] == signal ) {
+            sigaction(signal, &hb_previous_signal_actions[i], NULL);
+            raise(signal);
+            break;
+        }
+    }
+}
+
 void hb_signal_handler(int signal)
 {
+    // If an NSException was already captured and persisted by the exception
+    // path, this signal is just the process teardown that follows it (AppKit's
+    // crash-on-exceptions trap, or abort() after an uncaught exception). Don't
+    // write a second, redundant report for the same crash — only chain so the
+    // process still terminates.
+    if ( hb_exception_captured ) {
+        hb_chain_previous_signal(signal);
+        return;
+    }
+
     // Write crash data using async-signal-safe POSIX I/O only
     HBSignalCrashData crashData;
     memset(&crashData, 0, sizeof(crashData));
@@ -468,31 +511,13 @@ void hb_signal_handler(int signal)
         close(fd);
     }
 
-    // Chain to previous handler
-    for ( int i = 0; i < HB_SIGNAL_COUNT; i++ ) {
-        if ( hb_signals[i] == signal ) {
-            struct sigaction *prev = &hb_previous_signal_actions[i];
-            if ( prev->sa_flags & SA_SIGINFO ) {
-                // The previous handler expects the 3-argument sa_sigaction
-                // calling convention. This handler is a plain sa_handler, so
-                // it has no siginfo_t/ucontext_t to forward, and calling
-                // sa_handler would invoke the wrong union member (undefined
-                // behavior). Restore the previous action and re-raise so the
-                // kernel delivers the signal with the correct convention.
-                sigaction(signal, prev, NULL);
-                raise(signal);
-            } else if ( prev->sa_handler == SIG_DFL ) {
-                struct sigaction defaultAction;
-                memset(&defaultAction, 0, sizeof(defaultAction));
-                defaultAction.sa_handler = SIG_DFL;
-                sigaction(signal, &defaultAction, NULL);
-                raise(signal);
-            } else if ( prev->sa_handler != SIG_IGN ) {
-                prev->sa_handler(signal);
-            }
-            break;
-        }
-    }
+    // Chain to the previously installed handler (see hb_chain_previous_signal):
+    // restoring its action and re-raising is correct for every predecessor type
+    // — SA_SIGINFO handlers are re-entered by the kernel with the right calling
+    // convention, SIG_DFL performs the default action, SIG_IGN ignores it — and
+    // it removes our handler from the delivery path so a predecessor that
+    // returns without terminating can't loop back through us and re-fault.
+    hb_chain_previous_signal(signal);
 }
 
 - (NSString*) signalName:(int)sig
@@ -553,7 +578,13 @@ void hb_signal_handler(int signal)
 - (NSDictionary*) buildPayloadFromSignalCrashData:(HBSignalCrashData*)crashData
 {
     NSMutableArray* frames = [NSMutableArray array];
-    for ( int i = 0; i < crashData->address_count; i++ ) {
+    // address_count is read from a persisted file and could be corrupt or out
+    // of range; clamp to the fixed addresses[] capacity (128) so we never read
+    // past the buffer.
+    int count = crashData->address_count;
+    if ( count < 0 ) { count = 0; }
+    if ( count > 128 ) { count = 128; }
+    for ( int i = 0; i < count; i++ ) {
         NSString* addressStr = [NSString stringWithFormat:@"0x%lx", (unsigned long)crashData->addresses[i]];
 
         Dl_info info;
@@ -593,7 +624,7 @@ void hb_signal_handler(int signal)
         },
         @"server" : @{
             @"environment_name" : [self environment],
-            @"hostname" : [[NSProcessInfo processInfo] hostName],
+            @"hostname" : ([[NSProcessInfo processInfo] hostName] ?: @""),
             @"pid" : @([[NSProcessInfo processInfo] processIdentifier])
         }
     }];
@@ -602,6 +633,8 @@ void hb_signal_handler(int signal)
     if ( binaryImages ) {
         payload[@"binary_images"] = binaryImages;
     }
+
+    [self addServerRevisionToPayload:payload];
 
     return payload;
 }
@@ -774,7 +807,7 @@ void hb_signal_handler(int signal)
         },
         @"server" : @{
             @"environment_name" : [self environment],
-            @"hostname" : [[NSProcessInfo processInfo] hostName],
+            @"hostname" : ([[NSProcessInfo processInfo] hostName] ?: @""),
             @"pid" : @([[NSProcessInfo processInfo] processIdentifier])
         }
     }];
@@ -792,7 +825,24 @@ void hb_signal_handler(int signal)
         payload[@"binary_images"] = binaryImages;
     }
 
+    [self addServerRevisionToPayload:payload];
+
     return payload;
+}
+
+
+
+// Adds the configured revision (if any) to the payload's server block. The
+// notices schema defines revision at server.revision; it's omitted entirely
+// when no revision was configured.
+- (void) addServerRevisionToPayload:(NSMutableDictionary*)payload
+{
+    NSString* revision = self.customRevision;
+    if ( revision.length > 0 ) {
+        NSMutableDictionary* server = [payload[@"server"] mutableCopy];
+        server[@"revision"] = revision;
+        payload[@"server"] = server;
+    }
 }
 
 
@@ -916,21 +966,104 @@ void hb_signal_handler(int signal)
 
 
 
+// Recursively coerces an object graph into JSON-safe types. Strings, finite
+// numbers, and NSNull pass through; arrays and dictionaries are sanitized
+// element-by-element (non-string dictionary keys become their description);
+// anything else — NSError, NSURL, NSData, NSDate, custom objects, and
+// non-finite numbers (NaN/infinity) — is replaced with its string description.
+// This prevents a notice from being dropped when, e.g., an NSError userInfo
+// contains values that NSJSONSerialization can't encode.
+// Upper bound on nesting depth while sanitizing, so a deeply nested or
+// self-referential (cyclic) container can't overflow the stack.
+#define HB_JSON_MAX_DEPTH 100
+
+- (id) jsonSafeValue:(id)value
+{
+    return [self jsonSafeValue:value depth:0];
+}
+
+- (id) jsonSafeValue:(id)value depth:(NSInteger)depth
+{
+    if ( value == nil || [value isKindOfClass:[NSNull class]] ) {
+        return [NSNull null];
+    }
+    if ( [value isKindOfClass:[NSString class]] ) {
+        return value;
+    }
+    if ( [value isKindOfClass:[NSNumber class]] ) {
+        double d = [(NSNumber*)value doubleValue];
+        if ( isnan(d) || isinf(d) ) {
+            return [value description];
+        }
+        return value;
+    }
+
+    // Stop descending into containers past the depth limit. This bounds both
+    // pathologically deep structures and cycles (e.g. a container that, via an
+    // NSError userInfo, references itself), which would otherwise recurse until
+    // the stack overflows while building a crash payload.
+    if ( depth >= HB_JSON_MAX_DEPTH ) {
+        return @"<max depth exceeded>";
+    }
+
+    if ( [value isKindOfClass:[NSArray class]] ) {
+        NSMutableArray* result = [NSMutableArray arrayWithCapacity:[(NSArray*)value count]];
+        for ( id element in (NSArray*)value ) {
+            [result addObject:[self jsonSafeValue:element depth:depth + 1]];
+        }
+        return result;
+    }
+    if ( [value isKindOfClass:[NSDictionary class]] ) {
+        NSMutableDictionary* result = [NSMutableDictionary dictionary];
+        [(NSDictionary*)value enumerateKeysAndObjectsUsingBlock:^(id key, id obj, BOOL* stop) {
+            NSString* safeKey = [key isKindOfClass:[NSString class]] ? key : [key description];
+            if ( safeKey ) {
+                result[safeKey] = [self jsonSafeValue:obj depth:depth + 1];
+            }
+        }];
+        return result;
+    }
+    return [value description];
+}
+
 - (NSData*) toNSData:(NSDictionary*)dict
 {
+    // Fast path: serialize directly. +isValidJSONObject: does NOT reject every
+    // input -dataWithJSONObject: will choke on — most notably NaN/infinity
+    // NSNumbers, which pass the validity check but throw at write time. So on
+    // any failure, coerce the payload to JSON-safe types and retry once. This
+    // ensures a notice is never silently dropped at serialization time, while
+    // leaving valid payloads untouched on the common path.
+    NSData* jsonData = [self serializeJSONObject:dict];
+    if ( jsonData ) {
+        return jsonData;
+    }
+
+    jsonData = [self serializeJSONObject:[self jsonSafeValue:dict]];
+    if ( !jsonData ) {
+        NSLog(@"HB Error: JSON serialization failed even after sanitizing the payload.");
+    }
+    return jsonData;
+}
+
+- (NSData*) serializeJSONObject:(id)object
+{
+    if ( ![NSJSONSerialization isValidJSONObject:object] ) {
+        return nil;
+    }
     @try
     {
         NSError* error = nil;
-        NSData* jsonData = [NSJSONSerialization dataWithJSONObject:dict options:NSJSONWritingWithoutEscapingSlashes error:&error];
+        NSData* jsonData = [NSJSONSerialization dataWithJSONObject:object options:NSJSONWritingWithoutEscapingSlashes error:&error];
         if ( error ) {
-            NSLog(@"HB Error: JSON serialization failed: %@", error);
             return nil;
         }
         return jsonData;
     }
     @catch (NSException* exception)
     {
-        NSLog(@"HB Error: %@", exception);
+        // e.g. NaN/infinity NSNumber: isValidJSONObject: returns YES but the
+        // write throws. Caller falls back to the sanitized payload.
         return nil;
     }
 }
