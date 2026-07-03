@@ -49,7 +49,7 @@ static char hb_signal_crash_file_path[PATH_MAX];
 // Dedicated stack for fatal-signal delivery. A stack-overflow SIGSEGV arrives
 // on the exhausted thread stack; without this, the handler's own prologue
 // faults and the crash is never recorded. 64KB comfortably exceeds Darwin's
-// SIGSTKSZ and the handler's needs (its large buffers are static).
+// MINSIGSTKSZ (32KB) and the handler's needs (its large buffers are static).
 static char hb_signal_stack[64 * 1024];
 static NSUncaughtExceptionHandler *hb_previous_exception_handler = NULL;
 
@@ -615,6 +615,10 @@ void hb_signal_handler(int signal)
     // next launch has different ASLR slides.
     header.image_count = hb_binary_image_count;
 
+    // Accepted race: if a dyld image load is rebuilding hb_binary_images on
+    // another thread at the instant of the crash, the persisted table can be
+    // torn. The reader validates lengths so it can't fault; worst case is
+    // degraded symbolication for a crash that coincided with a dylib load.
     int fd = open(hb_signal_crash_file_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if ( fd >= 0 ) {
         write(fd, &header, sizeof(header));
