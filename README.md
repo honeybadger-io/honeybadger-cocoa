@@ -2,6 +2,16 @@
 
 An SDK for integrating [Honeybadger](https://honeybadger.io) into your iOS, macOS, and visionOS apps. This SDK can be used in both Swift and Objective-C projects.
 
+## Requirements
+
+Version 2.x of the SDK requires:
+
+- iOS 16.0+
+- macOS 13.0+
+- visionOS 1.0+
+
+If you need to support earlier OS versions, use the 1.x release of the SDK, which supports iOS 13.0+ and macOS 10.15+.
+
 ## Installation
 
 [![SwiftPM compatible](https://img.shields.io/badge/SwiftPM-compatible-brightgreen.svg)](https://swift.org/package-manager)
