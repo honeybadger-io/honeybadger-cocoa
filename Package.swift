@@ -28,6 +28,11 @@ let package = Package(
             name: "HoneybadgerSwift",
             dependencies: ["Honeybadger"],
             path: "Sources/Swift"
+        ),
+        .executableTarget(
+            name: "HoneybadgerTests",
+            dependencies: ["Honeybadger"],
+            path: "Tests/HoneybadgerTests"
         )
     ]
 )
