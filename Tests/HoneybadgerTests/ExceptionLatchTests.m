@@ -10,12 +10,20 @@ void run_exception_latch_tests(void)
     Honeybadger* hb = [Honeybadger sharedInstance];
     NSString* dir = [hb crashReportDirectory];
     NSFileManager* fm = [NSFileManager defaultManager];
+    // persistPayloadToDisk: does not create missing parent directories (only
+    // configureWithAPIKey: does, via setupCrashReportDirectory) — ensure the
+    // directory exists so the capture below persists a real crash_*.json.
+    [fm createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
     NSSet* before = [NSSet setWithArray:([fm contentsOfDirectoryAtPath:dir error:nil] ?: @[])];
 
     hb_exception_captured = 0;
     NSException* e = [NSException exceptionWithName:@"HBTest" reason:@"latch test" userInfo:nil];
     hb_capture_exception(e, @"unit-test");
     HB_ASSERT_EQ_INT((int)hb_exception_captured, 1);
+
+    // Prove the capture actually persisted a report to disk.
+    NSArray* afterCapture = [fm contentsOfDirectoryAtPath:dir error:nil] ?: @[];
+    HB_ASSERT_TRUE(afterCapture.count > before.count);
 
     // The reset is scheduled on the main queue; spin the runloop to run it —
     // this models "the process survived the capture".
