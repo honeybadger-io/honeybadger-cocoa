@@ -20,6 +20,7 @@ int main(int argc, char** argv) {
         NSString* outDir = argc > 2 ? [NSString stringWithUTF8String:argv[2]] : NSTemporaryDirectory();
 
         [Honeybadger configureWithAPIKey:@"integration-test-key" environment:@"integration"];
+        [Honeybadger setContext:@{ @"integration_user" : @"user-42" }];
 
         const struct mach_header* header = _dyld_get_image_header(0);
         NSString* marker = [NSString stringWithFormat:@"0x%lx", (unsigned long)header];

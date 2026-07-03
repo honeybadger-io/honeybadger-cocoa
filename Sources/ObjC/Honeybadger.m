@@ -120,6 +120,17 @@ static void hb_on_dyld_image_added(const struct mach_header* header, intptr_t sl
     hb_refresh_binary_images();
 }
 
+// -- CONTEXT SNAPSHOT --------------------------------------------------------
+// JSON-serialized copy of the user's context, maintained in normal context on
+// every setContext/resetContext/configure, so the signal handler can persist
+// the CRASHED process's context with a bare write(). Rebuilding context on the
+// next launch would lose user/session IDs for exactly the crashes this SDK
+// exists to capture. Same accepted torn-read race as hb_binary_images: length
+// is invalidated during the copy, and the reader degrades an unparseable
+// snapshot to an empty context rather than dropping the report.
+char hb_context_json[HB_MAX_CONTEXT_JSON];
+volatile int hb_context_json_length = 0;
+
 // -------------------------------------------------------------------------
 
 
@@ -199,6 +210,7 @@ static void hb_on_dyld_image_added(const struct mach_header* header, intptr_t sl
     });
 
     [hb setupCrashReportDirectory];
+    [hb refreshContextSnapshot];
     [hb setExceptionHandler];
     [hb installSignalHandlers];
     hb.initialized = TRUE;
@@ -338,6 +350,7 @@ static void hb_on_dyld_image_added(const struct mach_header* header, intptr_t sl
     if ( context ) {
         Honeybadger* hb = [Honeybadger sharedInstance];
         hb.context = [hb merge:hb.context with:context];
+        [hb refreshContextSnapshot];
     }
 }
 
@@ -345,7 +358,31 @@ static void hb_on_dyld_image_added(const struct mach_header* header, intptr_t sl
 
 + (void) resetContext
 {
-    [Honeybadger sharedInstance].context = [NSMutableDictionary dictionary];
+    Honeybadger* hb = [Honeybadger sharedInstance];
+    hb.context = [NSMutableDictionary dictionary];
+    [hb refreshContextSnapshot];
+}
+
+
+
+// Refreshes the static JSON snapshot (hb_context_json / hb_context_json_length)
+// used by the crash-time signal handler. See the comment on hb_context_json
+// for why this exists. Must only run in normal context.
+- (void) refreshContextSnapshot
+{
+    NSData* data = nil;
+    if ( _context && [NSJSONSerialization isValidJSONObject:_context] ) {
+        data = [NSJSONSerialization dataWithJSONObject:_context options:0 error:nil];
+    }
+    if ( !data || data.length > HB_MAX_CONTEXT_JSON ) {
+        // Unserializable or oversized: omit entirely rather than persist
+        // truncated (invalid) JSON.
+        hb_context_json_length = 0;
+        return;
+    }
+    hb_context_json_length = 0;  // invalidate while the buffer is mid-copy
+    memcpy(hb_context_json, data.bytes, data.length);
+    hb_context_json_length = (int)data.length;
 }
 
 
@@ -636,6 +673,15 @@ void hb_signal_handler(int signal, siginfo_t* info, void* uap)
     // next launch has different ASLR slides.
     header.image_count = hb_binary_image_count;
 
+    // Same accepted-race treatment for the context snapshot (see
+    // hb_context_json): clamp what could only be a torn/invalid length rather
+    // than trust it blindly.
+    int contextLength = hb_context_json_length;
+    if ( contextLength < 0 || contextLength > HB_MAX_CONTEXT_JSON ) {
+        contextLength = 0;
+    }
+    header.context_length = contextLength;
+
     // Accepted race: if a dyld image load is rebuilding hb_binary_images on
     // another thread at the instant of the crash, the persisted table can be
     // torn. The reader validates lengths so it can't fault; worst case is
@@ -644,6 +690,9 @@ void hb_signal_handler(int signal, siginfo_t* info, void* uap)
     if ( fd >= 0 ) {
         write(fd, &header, sizeof(header));
         write(fd, hb_binary_images, (size_t)header.image_count * sizeof(HBBinaryImage));
+        if ( contextLength > 0 ) {
+            write(fd, hb_context_json, (size_t)contextLength);
+        }
         close(fd);
     }
 
@@ -739,10 +788,27 @@ void hb_signal_handler(int signal, siginfo_t* info, void* uap)
 
     int32_t imageCount = header.image_count;
     if ( imageCount < 0 || imageCount > HB_MAX_BINARY_IMAGES ) return nil;
-    NSUInteger expectedLength = sizeof(HBSignalCrashHeader) + (NSUInteger)imageCount * sizeof(HBBinaryImage);
+
+    int32_t contextLength = header.context_length;
+    if ( contextLength < 0 || contextLength > HB_MAX_CONTEXT_JSON ) return nil;
+
+    NSUInteger expectedLength = sizeof(HBSignalCrashHeader) + (NSUInteger)imageCount * sizeof(HBBinaryImage) + (NSUInteger)contextLength;
     if ( data.length < expectedLength ) return nil;
 
     const HBBinaryImage* images = (const HBBinaryImage*)((const uint8_t*)data.bytes + sizeof(HBSignalCrashHeader));
+
+    // A torn or unparseable snapshot degrades to an empty context; the crash
+    // report itself is never dropped over context.
+    NSDictionary* persistedContext = @{};
+    if ( contextLength > 0 ) {
+        NSData* contextData = [data subdataWithRange:
+            NSMakeRange(sizeof(HBSignalCrashHeader) + (NSUInteger)imageCount * sizeof(HBBinaryImage),
+                        (NSUInteger)contextLength)];
+        id parsed = [NSJSONSerialization JSONObjectWithData:contextData options:0 error:nil];
+        if ( [parsed isKindOfClass:[NSDictionary class]] ) {
+            persistedContext = parsed;
+        }
+    }
 
     NSMutableArray* frames = [NSMutableArray arrayWithCapacity:(NSUInteger)addressCount];
     for ( int32_t i = 0; i < addressCount; i++ ) {
@@ -781,7 +847,7 @@ void hb_signal_handler(int signal, siginfo_t* info, void* uap)
             @"backtrace" : frames
         },
         @"request" : @{
-            @"context" : _context ? _context : @{}
+            @"context" : persistedContext
         },
         @"server" : @{
             @"environment_name" : [self environment],

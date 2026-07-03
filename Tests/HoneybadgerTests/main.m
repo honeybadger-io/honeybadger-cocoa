@@ -10,6 +10,7 @@ void run_signal_replay_tests(void);
 void run_exception_latch_tests(void);
 void run_signal_install_tests(void);
 void run_signal_chain_tests(void);
+void run_context_snapshot_tests(void);
 
 int main(int argc, char** argv)
 {
@@ -23,6 +24,7 @@ int main(int argc, char** argv)
         run_exception_latch_tests();
         run_signal_install_tests();
         run_signal_chain_tests();
+        run_context_snapshot_tests();
         return hb_test_summary();
     }
 }

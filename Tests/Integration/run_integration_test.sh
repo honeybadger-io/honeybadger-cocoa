@@ -57,6 +57,9 @@ frames = payload["error"]["backtrace"]
 assert frames, "no frames in replayed report"
 assert payload["error"]["message"].startswith("Signal SIGSEGV"), payload["error"]["message"]
 print("PASS: replayed report symbolication data comes from the crashed process")
+ctx = payload.get("request", {}).get("context", {})
+assert ctx.get("integration_user") == "user-42", f"context lost: {ctx}"
+print("PASS: crashed-run context survived into the replayed report")
 EOF
 [[ $? -eq 0 ]] && PASS=$((PASS+1)) || FAIL=$((FAIL+1))
 

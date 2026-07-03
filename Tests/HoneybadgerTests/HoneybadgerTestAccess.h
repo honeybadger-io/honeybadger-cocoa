@@ -9,6 +9,9 @@ extern int hb_signals[];
 extern struct sigaction hb_previous_signal_actions[];
 void hb_chain_previous_signal(int signal, siginfo_t* info, void* uap);
 
+extern char hb_context_json[];
+extern volatile int hb_context_json_length;
+
 // White-box access to SDK internals for tests. ObjC has no real privacy:
 // these declarations let tests message the private methods on the shared
 // singleton without changing the shipped header.
@@ -21,5 +24,7 @@ void hb_chain_previous_signal(int signal, siginfo_t* info, void* uap);
 - (NSString*) uniqueSignalReportPathInDirectory:(NSString*)dir;
 - (NSDictionary*) payloadFromSignalCrashFileData:(NSData*)data;
 - (void) installSignalHandlers;
+- (void) refreshContextSnapshot;
+- (NSMutableDictionary*) context;
 @property (atomic, copy) NSString* cachedHostname;
 @end

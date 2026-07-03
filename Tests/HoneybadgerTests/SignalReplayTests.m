@@ -2,10 +2,14 @@
 #import "HoneybadgerTestAccess.h"
 #import "../../Sources/ObjC/HoneybadgerCrashTypes.h"
 #include <signal.h>
+#include <stddef.h>
 
-// Builds a synthetic crash file: SIGSEGV, two frames, two images. The image
-// load addresses are deliberately values that cannot exist in this test
-// process, proving the payload is built from persisted data, not live dyld.
+// Builds a synthetic crash file: SIGSEGV, two frames, two images, and a JSON
+// context blob. The image load addresses are deliberately values that cannot
+// exist in this test process, proving the payload is built from persisted
+// data, not live dyld.
+static const char* kSyntheticContextJSON = "{\"user_id\":\"u-42\"}";
+
 static NSData* synthetic_crash_data(void)
 {
     HBSignalCrashHeader header;
@@ -17,6 +21,7 @@ static NSData* synthetic_crash_data(void)
     header.addresses[0] = 0x1000000500;  // inside image A
     header.addresses[1] = 0x2000000900;  // inside image B
     header.image_count = 2;
+    header.context_length = (int32_t)strlen(kSyntheticContextJSON);
 
     HBBinaryImage images[2];
     memset(images, 0, sizeof(images));
@@ -30,6 +35,7 @@ static NSData* synthetic_crash_data(void)
 
     NSMutableData* data = [NSMutableData dataWithBytes:&header length:sizeof(header)];
     [data appendBytes:images length:sizeof(images)];
+    [data appendBytes:kSyntheticContextJSON length:strlen(kSyntheticContextJSON)];
     return data;
 }
 
@@ -45,6 +51,7 @@ void run_signal_replay_tests(void)
     HB_ASSERT_EQ_OBJ(images[0][@"name"], @"/App/CrashedApp");
     HB_ASSERT_EQ_OBJ(images[0][@"uuid"], @"ABABABAB-ABAB-ABAB-ABAB-ABABABABABAB");
     HB_ASSERT_NIL(images[1][@"uuid"]);  // has_uuid = 0 → omitted
+    HB_ASSERT_EQ_OBJ(payload[@"request"][@"context"][@"user_id"], @"u-42");
 
     HB_TEST_BEGIN("testReplayFramesMapAddressesToPersistedImages");
     payload = [[Honeybadger sharedInstance] payloadFromSignalCrashFileData:synthetic_crash_data()];
@@ -64,8 +71,39 @@ void run_signal_replay_tests(void)
     [wrongMagic replaceBytesInRange:NSMakeRange(0, 4) withBytes:&zero];
     HB_ASSERT_NIL([hb payloadFromSignalCrashFileData:wrongMagic]);
 
-    // Truncated: header claims 2 images but only one follows.
+    // Stale format: a v2 file (no context section) must be rejected, not
+    // misread as v3 with garbage context bytes.
+    NSMutableData* wrongVersion = [synthetic_crash_data() mutableCopy];
+    uint32_t two = 2;
+    [wrongVersion replaceBytesInRange:NSMakeRange(4, 4) withBytes:&two];
+    HB_ASSERT_NIL([hb payloadFromSignalCrashFileData:wrongVersion]);
+
+    // Truncated: header claims context_length bytes but fewer follow.
     NSData* full = synthetic_crash_data();
-    NSData* truncated = [full subdataWithRange:NSMakeRange(0, full.length - sizeof(HBBinaryImage))];
+    NSData* truncated = [full subdataWithRange:NSMakeRange(0, full.length - 1)];
     HB_ASSERT_NIL([hb payloadFromSignalCrashFileData:truncated]);
+
+    // context_length (within the HB_MAX_CONTEXT_JSON cap) claims more bytes
+    // than are actually present in the file — exercises the expectedLength
+    // bounds check, not just the cap check.
+    NSMutableData* overclaimed = [synthetic_crash_data() mutableCopy];
+    int32_t overclaimedContextLength = 100;
+    [overclaimed replaceBytesInRange:NSMakeRange(offsetof(HBSignalCrashHeader, context_length), sizeof(int32_t))
+                           withBytes:&overclaimedContextLength];
+    HB_ASSERT_NIL([hb payloadFromSignalCrashFileData:overclaimed]);
+
+    HB_TEST_BEGIN("testReplayToleratesUnparseableContext");
+    HBSignalCrashHeader header;
+    memset(&header, 0, sizeof(header));
+    header.magic = HB_SIGNAL_CRASH_MAGIC;
+    header.version = HB_SIGNAL_CRASH_VERSION;
+    header.signal_number = SIGSEGV;
+    header.address_count = 0;
+    header.image_count = 0;
+    header.context_length = 4;
+    NSMutableData* torn = [NSMutableData dataWithBytes:&header length:sizeof(header)];
+    [torn appendBytes:"xxxx" length:4];  // invalid JSON
+    NSDictionary* tornPayload = [hb payloadFromSignalCrashFileData:torn];
+    HB_ASSERT_NOT_NIL(tornPayload);
+    HB_ASSERT_EQ_OBJ(tornPayload[@"request"][@"context"], @{});
 }

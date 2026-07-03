@@ -21,11 +21,14 @@ typedef struct {
 } HBBinaryImage;
 
 // On-disk signal crash file: one HBSignalCrashHeader followed by
-// header.image_count HBBinaryImage records, all written with write() from the
-// signal handler. magic/version let the reader reject foreign or stale files.
+// header.image_count HBBinaryImage records, followed by header.context_length
+// bytes of JSON-encoded request context (may be 0), all written with write()
+// from the signal handler. magic/version let the reader reject foreign or
+// stale files.
 #define HB_SIGNAL_CRASH_MAGIC   0x48425343u  /* "HBSC" */
-#define HB_SIGNAL_CRASH_VERSION 2u
+#define HB_SIGNAL_CRASH_VERSION 3u
 #define HB_MAX_CRASH_ADDRESSES  128
+#define HB_MAX_CONTEXT_JSON     8192
 
 typedef struct {
     uint32_t magic;
@@ -34,5 +37,5 @@ typedef struct {
     int32_t  address_count;
     uint64_t addresses[HB_MAX_CRASH_ADDRESSES];
     int32_t  image_count;
-    int32_t  _pad;
+    int32_t  context_length;
 } HBSignalCrashHeader;

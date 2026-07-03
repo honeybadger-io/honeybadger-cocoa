@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Configurable `revision` for release tracking: `configure(apiKey:environment:revision:)` reports the value as `server.revision`, and `bin/upload-dsyms.sh` accepts a matching `--revision` option. dSYM-to-crash matching remains UUID-based, so revision is optional.
 
 ### Fixed
+- Signal crash reports carry the context (`setContext:`) from the crashed process. A JSON snapshot is maintained off the crash path and persisted at crash time; previously context was rebuilt on the next launch, losing user/session IDs for signal crashes.
 - Signal crash reports now persist the crashed process's binary images (load addresses, ASLR slides, UUIDs) at crash time. Previously the image list was rebuilt on the next launch, whose ASLR slides differ — so every signal crash symbolicated against the wrong address space.
 - Signal handlers run on a dedicated alternate stack (`SA_ONSTACK`), so stack-overflow crashes — previously uncapturable — are now recorded.
 - Converted signal reports get unique filenames; a fixed name could clobber a still-unsent earlier report and lose it.
