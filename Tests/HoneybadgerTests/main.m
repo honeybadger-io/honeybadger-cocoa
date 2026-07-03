@@ -5,6 +5,7 @@ void run_smoke_tests(void);
 void run_environment_tests(void);
 void run_payload_tests(void);
 void run_pending_report_tests(void);
+void run_binary_image_tests(void);
 
 int main(int argc, char** argv)
 {
@@ -13,6 +14,7 @@ int main(int argc, char** argv)
         run_environment_tests();
         run_payload_tests();
         run_pending_report_tests();
+        run_binary_image_tests();
         return hb_test_summary();
     }
 }

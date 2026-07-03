@@ -16,6 +16,7 @@
 #include <unistd.h>
 #include <limits.h>
 #include <math.h>
+#import "HoneybadgerCrashTypes.h"
 
 #if (TARGET_OS_IOS || TARGET_OS_VISION)
     #import <UIKit/UIKit.h>
@@ -68,6 +69,56 @@ static void hb_capture_exception(NSException *exception, NSString *handlerName);
 #if TARGET_OS_OSX
 static void hb_install_appkit_exception_hook(void);
 #endif
+
+// -- STATIC BINARY IMAGE TABLE ----------------------------------------------
+// Rebuilt in normal (non-signal) context — at configure time and whenever dyld
+// loads an image — so the crash-time signal handler can persist symbolication
+// data from the *crashed* process with nothing but write(). Rebuilding on the
+// next launch instead would pair crash addresses with the wrong ASLR slides.
+HBBinaryImage hb_binary_images[HB_MAX_BINARY_IMAGES];
+volatile int hb_binary_image_count = 0;
+
+void hb_refresh_binary_images(void)
+{
+    uint32_t dyldCount = _dyld_image_count();
+    int out = 0;
+    for ( uint32_t i = 0; i < dyldCount && out < HB_MAX_BINARY_IMAGES; i++ ) {
+        const struct mach_header* header = _dyld_get_image_header(i);
+        if ( !header ) continue;
+
+        HBBinaryImage* img = &hb_binary_images[out];
+        memset(img, 0, sizeof(*img));
+
+        const char* name = _dyld_get_image_name(i);
+        if ( name ) strlcpy(img->name, name, sizeof(img->name));
+        img->load_address = (uint64_t)(uintptr_t)header;
+        img->vmaddr_slide = (uint64_t)(uintptr_t)_dyld_get_image_vmaddr_slide(i);
+        img->cpu_type = header->cputype;
+        img->cpu_subtype = header->cpusubtype;
+
+        BOOL is64 = (header->magic == MH_MAGIC_64 || header->magic == MH_CIGAM_64);
+        uintptr_t cursor = (uintptr_t)header + (is64 ? sizeof(struct mach_header_64) : sizeof(struct mach_header));
+        for ( uint32_t j = 0; j < header->ncmds; j++ ) {
+            const struct load_command* cmd = (const struct load_command*)cursor;
+            if ( cmd->cmd == LC_UUID ) {
+                const struct uuid_command* uuidCmd = (const struct uuid_command*)cursor;
+                memcpy(img->uuid, uuidCmd->uuid, 16);
+                img->has_uuid = 1;
+                break;
+            }
+            cursor += cmd->cmdsize;
+        }
+        out++;
+    }
+    hb_binary_image_count = out;
+}
+
+static void hb_on_dyld_image_added(const struct mach_header* header, intptr_t slide)
+{
+    // Full rebuild keeps this trivially correct; image loads are rare after
+    // startup. Runs in normal context (dyld callbacks are not signal context).
+    hb_refresh_binary_images();
+}
 
 // -------------------------------------------------------------------------
 
@@ -469,6 +520,14 @@ static void hb_install_appkit_exception_hook(void)
 
 - (void) installSignalHandlers
 {
+    hb_refresh_binary_images();
+    static dispatch_once_t dyldOnce;
+    dispatch_once(&dyldOnce, ^{
+        // Note: registration synchronously invokes the callback once per
+        // already-loaded image; the redundant rebuilds are cheap and one-time.
+        _dyld_register_func_for_add_image(&hb_on_dyld_image_added);
+    });
+
     for ( int i = 0; i < HB_SIGNAL_COUNT; i++ ) {
         struct sigaction action;
         memset(&action, 0, sizeof(action));
@@ -1167,56 +1226,36 @@ void hb_signal_handler(int signal)
 
 - (NSArray*) captureBinaryImages
 {
-    NSMutableArray* images = [NSMutableArray array];
-
-    uint32_t count = _dyld_image_count();
-    for ( uint32_t i = 0; i < count; i++ ) {
-        const struct mach_header* header = _dyld_get_image_header(i);
-        if ( !header ) continue;
-
-        const char* name = _dyld_get_image_name(i);
-        intptr_t slide = _dyld_get_image_vmaddr_slide(i);
-
-        // Walk Mach-O load commands to find LC_UUID
-        NSString* uuidStr = nil;
-        NSString* archStr = nil;
-
-        BOOL is64 = (header->magic == MH_MAGIC_64 || header->magic == MH_CIGAM_64);
-        uintptr_t cursor = (uintptr_t)header + (is64 ? sizeof(struct mach_header_64) : sizeof(struct mach_header));
-
-        for ( uint32_t j = 0; j < header->ncmds; j++ ) {
-            const struct load_command* cmd = (const struct load_command*)cursor;
-            if ( cmd->cmd == LC_UUID ) {
-                const struct uuid_command* uuidCmd = (const struct uuid_command*)cursor;
-                const uint8_t* uuid = uuidCmd->uuid;
-                uuidStr = [NSString stringWithFormat:
-                    @"%02X%02X%02X%02X-%02X%02X-%02X%02X-%02X%02X-%02X%02X%02X%02X%02X%02X",
-                    uuid[0], uuid[1], uuid[2], uuid[3],
-                    uuid[4], uuid[5],
-                    uuid[6], uuid[7],
-                    uuid[8], uuid[9],
-                    uuid[10], uuid[11], uuid[12], uuid[13], uuid[14], uuid[15]];
-                break;
-            }
-            cursor += cmd->cmdsize;
-        }
-
-        const NXArchInfo* archInfo = NXGetArchInfoFromCpuType(header->cputype, header->cpusubtype);
-        if ( archInfo ) {
-            archStr = [NSString stringWithUTF8String:archInfo->name];
-        }
-
-        NSMutableDictionary* imageDict = [NSMutableDictionary dictionary];
-        imageDict[@"name"] = name ? [NSString stringWithUTF8String:name] : @"";
-        imageDict[@"load_address"] = [NSString stringWithFormat:@"0x%lx", (unsigned long)header];
-        imageDict[@"vmaddr_slide"] = [NSString stringWithFormat:@"0x%lx", (unsigned long)slide];
-        if ( uuidStr ) imageDict[@"uuid"] = uuidStr;
-        if ( archStr ) imageDict[@"arch"] = archStr;
-
-        [images addObject:imageDict];
+    hb_refresh_binary_images();
+    int count = hb_binary_image_count;
+    NSMutableArray* images = [NSMutableArray arrayWithCapacity:(NSUInteger)count];
+    for ( int i = 0; i < count; i++ ) {
+        [images addObject:[self dictionaryFromBinaryImage:&hb_binary_images[i]]];
     }
-
     return images;
+}
+
+- (NSDictionary*) dictionaryFromBinaryImage:(const HBBinaryImage*)img
+{
+    NSMutableDictionary* imageDict = [NSMutableDictionary dictionary];
+    imageDict[@"name"] = [NSString stringWithUTF8String:img->name] ?: @"";
+    imageDict[@"load_address"] = [NSString stringWithFormat:@"0x%llx", (unsigned long long)img->load_address];
+    imageDict[@"vmaddr_slide"] = [NSString stringWithFormat:@"0x%llx", (unsigned long long)img->vmaddr_slide];
+    if ( img->has_uuid ) {
+        const uint8_t* uuid = img->uuid;
+        imageDict[@"uuid"] = [NSString stringWithFormat:
+            @"%02X%02X%02X%02X-%02X%02X-%02X%02X-%02X%02X-%02X%02X%02X%02X%02X%02X",
+            uuid[0], uuid[1], uuid[2], uuid[3],
+            uuid[4], uuid[5],
+            uuid[6], uuid[7],
+            uuid[8], uuid[9],
+            uuid[10], uuid[11], uuid[12], uuid[13], uuid[14], uuid[15]];
+    }
+    const NXArchInfo* archInfo = NXGetArchInfoFromCpuType(img->cpu_type, img->cpu_subtype);
+    if ( archInfo && archInfo->name ) {
+        imageDict[@"arch"] = [NSString stringWithUTF8String:archInfo->name] ?: @"";
+    }
+    return imageDict;
 }
 
 @end

@@ -17,6 +17,7 @@ Pod::Spec.new do |spec|
 	spec.preserve_paths = "bin/upload-dsyms.sh"
 	spec.subspec "Core" do |subspec|
 		subspec.source_files = "Sources/ObjC/**/*.{h,m}"
+		subspec.public_header_files = "Sources/ObjC/include/*.h"
 	end
 	spec.subspec "Swift" do |subspec|
 		subspec.dependency "Honeybadger/Core"
