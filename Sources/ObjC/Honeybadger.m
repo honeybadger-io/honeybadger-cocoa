@@ -548,6 +548,16 @@ void hb_signal_handler(int signal)
 
 // -- PENDING CRASH REPORTS ------------------------------------------------
 
+// A unique destination for a signal crash report converted from the binary
+// crash file. A fixed name could overwrite an earlier, still-unsent report
+// whose async send is in flight — whose completion handler would then delete
+// the newer report on success.
+- (NSString*) uniqueSignalReportPathInDirectory:(NSString*)dir
+{
+    NSString* filename = [NSString stringWithFormat:@"crash_signal_%@.json", [[NSUUID UUID] UUIDString]];
+    return [dir stringByAppendingPathComponent:filename];
+}
+
 - (void) sendPendingCrashReports
 {
     NSString* dir = [self crashReportDirectory];
@@ -574,8 +584,7 @@ void hb_signal_handler(int signal)
                         // Convert the binary crash file to a JSON report on disk,
                         // then send from the JSON path. This ensures the report
                         // survives if the send fails (picked up on the next launch).
-                        NSString* jsonPath = [[path stringByDeletingPathExtension]
-                                              stringByAppendingPathExtension:@"json"];
+                        NSString* jsonPath = [self uniqueSignalReportPathInDirectory:dir];
                         [jsonData writeToFile:jsonPath atomically:YES];
                         [fm removeItemAtPath:path error:nil];
                         [self sendPayloadData:jsonData filePath:jsonPath];

@@ -11,5 +11,6 @@
 - (NSDictionary*) buildPayload:(NSDictionary*)data;
 - (NSArray*) captureBinaryImages;
 - (NSString*) crashReportDirectory;
+- (NSString*) uniqueSignalReportPathInDirectory:(NSString*)dir;
 @property (atomic, copy) NSString* cachedHostname;
 @end
