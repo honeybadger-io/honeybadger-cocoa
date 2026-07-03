@@ -15,12 +15,16 @@
 # errors they symbolicate share the same revision for release tracking.
 #
 
-set -euo pipefail
+set -uo pipefail
+# Deliberately NOT set -e: a per-bundle failure must warn and continue to the
+# next bundle (an Xcode archive should never die mid-loop on a network blip).
+# Failures are counted explicitly and reported via the exit status instead.
 
 API_KEY=""
 DSYM_PATH=""
 REVISION=""
 API_BASE="https://api.honeybadger.io"
+WARN_ONLY=0
 
 usage() {
     echo "Usage: $0 --api-key <key> [--dsym-path <path>] [--revision <revision>]"
@@ -31,6 +35,8 @@ usage() {
     echo "               (defaults to Xcode's DWARF_DSYM_FOLDER_PATH)"
     echo "  --revision   Optional revision/release identifier. Must match the"
     echo "               revision configured in the SDK."
+    echo "  --warn-only  Always exit 0, even if uploads fail (for build phases"
+    echo "               that should not fail the build)"
     exit 1
 }
 
@@ -47,6 +53,10 @@ while [[ $# -gt 0 ]]; do
         --revision)
             REVISION="$2"
             shift 2
+            ;;
+        --warn-only)
+            WARN_ONLY=1
+            shift 1
             ;;
         *)
             echo "Error: Unknown option $1"
@@ -74,6 +84,13 @@ if [[ ! -d "$DSYM_PATH" ]]; then
     exit 1
 fi
 
+for dep in curl zip python3; do
+    if ! command -v "$dep" > /dev/null 2>&1; then
+        echo "Error: required tool '$dep' not found in PATH"
+        exit 2
+    fi
+done
+
 DSYM_BUNDLES=$(find "$DSYM_PATH" -name "*.dSYM" -type d 2>/dev/null)
 
 if [[ -z "$DSYM_BUNDLES" ]]; then
@@ -82,18 +99,23 @@ if [[ -z "$DSYM_BUNDLES" ]]; then
 fi
 
 TMPDIR_CLEANUP=$(mktemp -d)
-trap "rm -rf $TMPDIR_CLEANUP" EXIT
+trap 'rm -rf "$TMPDIR_CLEANUP"' EXIT
+
+TOTAL=0
+FAILED=0
 
 echo "Found dSYM bundles:"
 while IFS= read -r dsym; do
     DSYM_NAME=$(basename "$dsym")
+    TOTAL=$((TOTAL+1))
     echo "  $DSYM_NAME"
 
     # Extract UUID(s) from the dSYM
-    UUIDS=$(dwarfdump --uuid "$dsym" 2>/dev/null | awk '{print $2}')
+    UUIDS=$(dwarfdump --uuid "$dsym" 2>/dev/null | awk '{print $2}' || true)
 
     if [[ -z "$UUIDS" ]]; then
         echo "    Warning: Could not extract UUID, skipping"
+        FAILED=$((FAILED+1))
         continue
     fi
 
@@ -101,7 +123,11 @@ while IFS= read -r dsym; do
 
     # Create a zip of the dSYM bundle
     ZIP_PATH="$TMPDIR_CLEANUP/${DSYM_NAME}.zip"
-    (cd "$(dirname "$dsym")" && zip -r -q "$ZIP_PATH" "$DSYM_NAME")
+    if ! (cd "$(dirname "$dsym")" && zip -r -q "$ZIP_PATH" "$DSYM_NAME"); then
+        echo "    Error: Failed to zip dSYM bundle"
+        FAILED=$((FAILED+1))
+        continue
+    fi
 
     ZIP_SIZE=$(wc -c < "$ZIP_PATH" | tr -d ' ')
     echo "    Zip size: $ZIP_SIZE bytes"
@@ -124,7 +150,11 @@ print(json.dumps(body))
         -H "X-API-Key: $API_KEY" \
         -H "Content-Type: application/json" \
         -d "$REQUEST_BODY" \
-        "$API_BASE/v1/dsyms")
+        "$API_BASE/v1/dsyms") || {
+        echo "    Error: Request for upload URL failed (network error)"
+        FAILED=$((FAILED+1))
+        continue
+    }
 
     HTTP_CODE=$(echo "$RESPONSE" | tail -1)
     BODY=$(echo "$RESPONSE" | sed '$d')
@@ -132,6 +162,7 @@ print(json.dumps(body))
     if [[ "$HTTP_CODE" != "200" && "$HTTP_CODE" != "201" ]]; then
         echo "    Error: Failed to get upload URL (HTTP $HTTP_CODE)"
         echo "    Response: $BODY"
+        FAILED=$((FAILED+1))
         continue
     fi
 
@@ -140,6 +171,7 @@ print(json.dumps(body))
     if [[ -z "$UPLOAD_URL" ]]; then
         echo "    Error: No upload_url in response"
         echo "    Response: $BODY"
+        FAILED=$((FAILED+1))
         continue
     fi
 
@@ -149,19 +181,34 @@ print(json.dumps(body))
         -X PUT \
         -H "Content-Type: application/zip" \
         --data-binary "@$ZIP_PATH" \
-        "$UPLOAD_URL")
+        "$UPLOAD_URL") || {
+        echo "    Error: Upload failed (network error)"
+        FAILED=$((FAILED+1))
+        rm -f "$ZIP_PATH"
+        continue
+    }
 
     UPLOAD_CODE=$(echo "$UPLOAD_RESPONSE" | tail -1)
+
+    # Clean up zip
+    rm -f "$ZIP_PATH"
 
     if [[ "$UPLOAD_CODE" == "200" || "$UPLOAD_CODE" == "201" ]]; then
         echo "    Upload successful"
     else
         echo "    Error: Upload failed (HTTP $UPLOAD_CODE)"
+        FAILED=$((FAILED+1))
+        continue
     fi
-
-    # Clean up zip
-    rm -f "$ZIP_PATH"
 
 done <<< "$DSYM_BUNDLES"
 
-echo "Done."
+if [[ $FAILED -gt 0 ]]; then
+    echo "Done: $((TOTAL - FAILED))/$TOTAL dSYM bundle(s) uploaded, $FAILED failed."
+    if [[ $WARN_ONLY -eq 1 ]]; then
+        echo "(--warn-only: exiting 0 despite failures)"
+        exit 0
+    fi
+    exit 1
+fi
+echo "Done: $TOTAL dSYM bundle(s) uploaded."

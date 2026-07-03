@@ -1,0 +1,20 @@
+#!/bin/bash
+# Test stub for curl. CURL_MODE controls behavior:
+#   ok             -> presigned-URL request returns JSON+200; PUT returns 200
+#   http-fail      -> every request returns HTTP 500
+#   transport-fail -> exit 6 (DNS failure), like a network hiccup
+case "${CURL_MODE:-ok}" in
+    ok)
+        if [[ "$*" == *"/v1/dsyms"* ]]; then
+            printf '{"upload_url":"https://example.invalid/put"}\n200'
+        else
+            printf '\n200'
+        fi
+        ;;
+    http-fail)
+        printf 'server says no\n500'
+        ;;
+    transport-fail)
+        exit 6
+        ;;
+esac
