@@ -42,8 +42,8 @@ static NSString * const shortPlatformName = @"unknown";
 // -- SIGNAL HANDLING STATICS ----------------------------------------------
 
 #define HB_SIGNAL_COUNT 6
-static int hb_signals[HB_SIGNAL_COUNT] = { SIGABRT, SIGSEGV, SIGBUS, SIGFPE, SIGILL, SIGTRAP };
-static struct sigaction hb_previous_signal_actions[HB_SIGNAL_COUNT];
+int hb_signals[HB_SIGNAL_COUNT] = { SIGABRT, SIGSEGV, SIGBUS, SIGFPE, SIGILL, SIGTRAP };
+struct sigaction hb_previous_signal_actions[HB_SIGNAL_COUNT];
 static char hb_signal_crash_file_path[PATH_MAX];
 
 // Dedicated stack for fatal-signal delivery. A stack-overflow SIGSEGV arrives
@@ -64,7 +64,7 @@ static IMP hb_original_report_exception = NULL;
 #endif
 
 void hb_exception_handler(NSException *exception);
-void hb_signal_handler(int signal);
+void hb_signal_handler(int signal, siginfo_t* info, void* uap);
 void hb_capture_exception(NSException *exception, NSString *handlerName);
 #if TARGET_OS_OSX
 static void hb_install_appkit_exception_hook(void);
@@ -555,27 +555,48 @@ static void hb_install_appkit_exception_hook(void)
         struct sigaction action;
         memset(&action, 0, sizeof(action));
         sigemptyset(&action.sa_mask);
-        action.sa_handler = hb_signal_handler;
-        action.sa_flags = SA_ONSTACK;
+        action.sa_sigaction = hb_signal_handler;
+        action.sa_flags = SA_ONSTACK | SA_SIGINFO;
         sigaction(hb_signals[i], &action, &hb_previous_signal_actions[i]);
     }
 }
 
-// Restores the previously installed action for `signal` and re-raises it so the
-// original handler (or the default action) runs. Async-signal-safe: uses only
-// sigaction() and raise().
-static void hb_chain_previous_signal(int signal)
+// Hands the signal to the previously installed handler with full fidelity.
+// A SA_SIGINFO predecessor (Crashlytics, Sentry, PLCrashReporter) is invoked
+// DIRECTLY with the original siginfo_t/ucontext_t — re-raising instead would
+// deliver a synthetic signal (si_code SI_USER-like, no fault address) and
+// corrupt the co-installed reporter's crash data. Plain handlers are invoked
+// directly with the signal number. SIG_DFL restores and re-raises so the
+// default action (terminate) runs; SIG_IGN does nothing. In every case our
+// own disposition is replaced first, so a predecessor that returns without
+// terminating re-faults into the predecessor, not back through us.
+// Async-signal-safe: sigaction(), raise(), and direct calls only.
+void hb_chain_previous_signal(int signal, siginfo_t* info, void* uap)
 {
     for ( int i = 0; i < HB_SIGNAL_COUNT; i++ ) {
-        if ( hb_signals[i] == signal ) {
-            sigaction(signal, &hb_previous_signal_actions[i], NULL);
-            raise(signal);
-            break;
+        if ( hb_signals[i] != signal ) {
+            continue;
         }
+        struct sigaction previous = hb_previous_signal_actions[i];
+
+        // Remove ourselves from the delivery path before chaining.
+        sigaction(signal, &previous, NULL);
+
+        if ( previous.sa_flags & SA_SIGINFO ) {
+            if ( previous.sa_sigaction ) {
+                previous.sa_sigaction(signal, info, uap);
+            }
+        } else if ( previous.sa_handler == SIG_DFL ) {
+            raise(signal);
+        } else if ( previous.sa_handler != SIG_IGN && previous.sa_handler ) {
+            previous.sa_handler(signal);
+        }
+        // SIG_IGN: swallow, matching the predecessor's declared intent.
+        break;
     }
 }
 
-void hb_signal_handler(int signal)
+void hb_signal_handler(int signal, siginfo_t* info, void* uap)
 {
     // If an NSException was already captured and persisted by the exception
     // path, this signal is just the process teardown that follows it (AppKit's
@@ -583,7 +604,7 @@ void hb_signal_handler(int signal)
     // write a second, redundant report for the same crash — only chain so the
     // process still terminates.
     if ( hb_exception_captured ) {
-        hb_chain_previous_signal(signal);
+        hb_chain_previous_signal(signal, info, uap);
         return;
     }
 
@@ -627,12 +648,13 @@ void hb_signal_handler(int signal)
     }
 
     // Chain to the previously installed handler (see hb_chain_previous_signal):
-    // restoring its action and re-raising is correct for every predecessor type
-    // — SA_SIGINFO handlers are re-entered by the kernel with the right calling
-    // convention, SIG_DFL performs the default action, SIG_IGN ignores it — and
-    // it removes our handler from the delivery path so a predecessor that
-    // returns without terminating can't loop back through us and re-fault.
-    hb_chain_previous_signal(signal);
+    // a SA_SIGINFO predecessor is invoked directly with the original
+    // siginfo_t/ucontext_t, a plain handler is invoked directly with the
+    // signal number, SIG_DFL restores and re-raises so the default action
+    // runs, and SIG_IGN is swallowed — and in every case our handler is
+    // removed from the delivery path first, so a predecessor that returns
+    // without terminating can't loop back through us and re-fault.
+    hb_chain_previous_signal(signal, info, uap);
 }
 
 - (NSString*) signalName:(int)sig

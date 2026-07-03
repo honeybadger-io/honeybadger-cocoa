@@ -38,6 +38,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Signal crash persistence: signal crash data (`.bin`) is now converted to a JSON report on disk before transmission. If the send fails, the JSON report is retried on next launch rather than lost.
 - macOS exception capture: the SDK now hooks `-[NSApplication reportException:]` so that `NSException`s thrown inside AppKit event handlers (e.g. button actions) are captured as proper exception reports. AppKit catches these exceptions in its own event loop, so they never reach `NSUncaughtExceptionHandler` — previously they were missed entirely on macOS. The SDK also registers the `NSApplicationCrashOnExceptions` default (via `registerDefaults:`, so an explicit host-app value still wins) so the app terminates after the crash is recorded rather than continuing in an undefined state.
 - Notice payloads are no longer dropped when an `NSError`/`NSException` `userInfo` (carried in `details`) contains values that aren't JSON-serializable — `NSError`, `NSURL`, custom objects, non-finite numbers, etc. Such values are coerced to their string description before serialization, so the report is preserved.
+- Signal-handler chaining preserves the original `siginfo_t`/`ucontext_t` for a previously installed `SA_SIGINFO` crash reporter (Crashlytics, Sentry, etc.). Previously the predecessor received a synthetic re-raised signal with no fault address.
 
 ## [1.1.0] - 2025-03-24
 ### Added

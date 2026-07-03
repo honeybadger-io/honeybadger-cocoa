@@ -18,6 +18,7 @@ void run_signal_install_tests(void)
     struct sigaction current;
     sigaction(SIGSEGV, NULL, &current);
     HB_ASSERT_TRUE(current.sa_flags & SA_ONSTACK);
+    HB_ASSERT_TRUE(current.sa_flags & SA_SIGINFO);
 
     stack_t ss;
     HB_ASSERT_EQ_INT(sigaltstack(NULL, &ss), 0);
