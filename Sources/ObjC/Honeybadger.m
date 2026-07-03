@@ -80,6 +80,7 @@ static void hb_install_appkit_exception_hook(void);
 @property (nonatomic) NSString* customRevision;
 @property (nonatomic) BOOL initialized;
 @property (nonatomic) NSMutableDictionary<NSString*, NSString*>* context;
+@property (atomic, copy) NSString* cachedHostname;
 
 @end
 
@@ -137,6 +138,15 @@ static void hb_install_appkit_exception_hook(void);
     hb.apiKey = [hb safeTrimmedStr:apiKey];
     hb.customEnvironment = [hb safeTrimmedStr:environment];
     hb.customRevision = [hb safeTrimmedStr:revision];
+
+    // -[NSProcessInfo hostName] can perform a blocking reverse-DNS lookup
+    // (seconds on a bad network). It must never run on the crash path, where
+    // it would stall the handler before the report is persisted — so resolve
+    // it once here, off the main thread, and read the cached value everywhere.
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        hb.cachedHostname = [[NSProcessInfo processInfo] hostName] ?: @"";
+    });
+
     [hb setupCrashReportDirectory];
     [hb setExceptionHandler];
     [hb installSignalHandlers];
@@ -300,6 +310,7 @@ static void hb_install_appkit_exception_hook(void);
         _apiKey = @"";
         _initialized = FALSE;
         _context = [NSMutableDictionary dictionary];
+        _cachedHostname = @"";
     }
 
     return self;
@@ -624,7 +635,7 @@ void hb_signal_handler(int signal)
         },
         @"server" : @{
             @"environment_name" : [self environment],
-            @"hostname" : ([[NSProcessInfo processInfo] hostName] ?: @""),
+            @"hostname" : (self.cachedHostname ?: @""),
             @"pid" : @([[NSProcessInfo processInfo] processIdentifier])
         }
     }];
@@ -807,7 +818,7 @@ void hb_signal_handler(int signal)
         },
         @"server" : @{
             @"environment_name" : [self environment],
-            @"hostname" : ([[NSProcessInfo processInfo] hostName] ?: @""),
+            @"hostname" : (self.cachedHostname ?: @""),
             @"pid" : @([[NSProcessInfo processInfo] processIdentifier])
         }
     }];
