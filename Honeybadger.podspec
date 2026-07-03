@@ -1,6 +1,6 @@
 Pod::Spec.new do |spec|
 	spec.name = "Honeybadger"
-  	spec.version = "1.2.0"
+  	spec.version = "2.0.0"
   	spec.summary = "Honeybadger.io for iOS, macOS, and visionOS"
   	spec.description = "This is the Honeybadger.io SDK for iOS, macOS, and visionOS"
   	spec.homepage = "https://honeybadger.io"

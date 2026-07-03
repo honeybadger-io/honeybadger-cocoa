@@ -346,14 +346,16 @@ Add the script as a Run Script build phase so dSYMs upload automatically wheneve
 **CocoaPods** — the script is installed with the pod, so reference it from `${PODS_ROOT}`:
 
 ```shell
-bash "${PODS_ROOT}/Honeybadger/bin/upload-dsyms.sh" --api-key "${HB_API_KEY}"
+bash "${PODS_ROOT}/Honeybadger/bin/upload-dsyms.sh" --api-key "${HB_API_KEY}" --warn-only
 ```
 
 **Swift Package Manager** — SPM does not install standalone scripts to a referenceable location. Download `bin/upload-dsyms.sh` from this repository, add it to your project (e.g. at `Scripts/upload-dsyms.sh`), and reference it:
 
 ```shell
-bash "${SRCROOT}/Scripts/upload-dsyms.sh" --api-key "${HB_API_KEY}"
+bash "${SRCROOT}/Scripts/upload-dsyms.sh" --api-key "${HB_API_KEY}" --warn-only
 ```
+
+`--warn-only` makes the script always exit 0 so a failed upload never fails your archive; omit it in CI, where a nonzero exit on failed uploads is what you want.
 
 ### Manual / CI Upload
 
