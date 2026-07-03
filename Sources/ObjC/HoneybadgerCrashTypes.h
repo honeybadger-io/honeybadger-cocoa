@@ -19,3 +19,20 @@ typedef struct {
     cpu_type_t    cpu_type;
     cpu_subtype_t cpu_subtype;
 } HBBinaryImage;
+
+// On-disk signal crash file: one HBSignalCrashHeader followed by
+// header.image_count HBBinaryImage records, all written with write() from the
+// signal handler. magic/version let the reader reject foreign or stale files.
+#define HB_SIGNAL_CRASH_MAGIC   0x48425343u  /* "HBSC" */
+#define HB_SIGNAL_CRASH_VERSION 2u
+#define HB_MAX_CRASH_ADDRESSES  128
+
+typedef struct {
+    uint32_t magic;
+    uint32_t version;
+    int32_t  signal_number;
+    int32_t  address_count;
+    uint64_t addresses[HB_MAX_CRASH_ADDRESSES];
+    int32_t  image_count;
+    int32_t  _pad;
+} HBSignalCrashHeader;

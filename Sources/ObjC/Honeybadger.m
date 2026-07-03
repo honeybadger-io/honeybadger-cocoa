@@ -57,12 +57,6 @@ static volatile sig_atomic_t hb_exception_captured = 0;
 static IMP hb_original_report_exception = NULL;
 #endif
 
-typedef struct {
-    int signal_number;
-    int address_count;
-    void *addresses[128];
-} HBSignalCrashData;
-
 void hb_exception_handler(NSException *exception);
 void hb_signal_handler(int signal);
 static void hb_capture_exception(NSException *exception, NSString *handlerName);
@@ -563,21 +557,38 @@ void hb_signal_handler(int signal)
         return;
     }
 
-    // Write crash data using async-signal-safe POSIX I/O only
-    HBSignalCrashData crashData;
-    memset(&crashData, 0, sizeof(crashData));
-    crashData.signal_number = signal;
+    // Crash handling is one-shot per process, so static buffers are safe here
+    // and keep ~5KB of state off the (possibly exhausted) crashing stack.
+    static HBSignalCrashHeader header;
+    memset(&header, 0, sizeof(header));
+    header.magic = HB_SIGNAL_CRASH_MAGIC;
+    header.version = HB_SIGNAL_CRASH_VERSION;
+    header.signal_number = signal;
 
-    void *addresses[128];
-    int count = backtrace(addresses, 128);
-    crashData.address_count = count;
-    for ( int i = 0; i < count && i < 128; i++ ) {
-        crashData.addresses[i] = addresses[i];
+    // backtrace() is not formally async-signal-safe; it is the one documented
+    // exception to the signal-safety rule in this handler. It is pre-warmed at
+    // install time so no lazy initialization runs here. Issue #13 tracks
+    // replacing it with a hand-rolled frame-pointer walk.
+    static void* addresses[HB_MAX_CRASH_ADDRESSES];
+    int count = backtrace(addresses, HB_MAX_CRASH_ADDRESSES);
+
+    // Frames 0 and 1 are this handler and the kernel trampoline (_sigtramp);
+    // skip them so reports group by the faulting frame, not by Honeybadger.
+    int skip = (count > 2) ? 2 : 0;
+    header.address_count = count - skip;
+    for ( int i = 0; i < header.address_count; i++ ) {
+        header.addresses[i] = (uint64_t)(uintptr_t)addresses[i + skip];
     }
+
+    // Persist the pre-captured image table (see hb_refresh_binary_images):
+    // symbolication data must come from THIS process's address space — the
+    // next launch has different ASLR slides.
+    header.image_count = hb_binary_image_count;
 
     int fd = open(hb_signal_crash_file_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if ( fd >= 0 ) {
-        write(fd, &crashData, sizeof(crashData));
+        write(fd, &header, sizeof(header));
+        write(fd, hb_binary_images, (size_t)header.image_count * sizeof(HBBinaryImage));
         close(fd);
     }
 
@@ -633,59 +644,74 @@ void hb_signal_handler(int signal)
             }
         } else if ( [filename hasSuffix:@".bin"] ) {
             NSData* data = [NSData dataWithContentsOfFile:path];
-            if ( data && data.length >= sizeof(HBSignalCrashData) ) {
-                HBSignalCrashData crashData;
-                [data getBytes:&crashData length:sizeof(HBSignalCrashData)];
-                NSDictionary* payload = [self buildPayloadFromSignalCrashData:&crashData];
-                if ( payload ) {
-                    NSData* jsonData = [self toNSData:payload];
-                    if ( jsonData ) {
-                        // Convert the binary crash file to a JSON report on disk,
-                        // then send from the JSON path. This ensures the report
-                        // survives if the send fails (picked up on the next launch).
-                        NSString* jsonPath = [self uniqueSignalReportPathInDirectory:dir];
-                        [jsonData writeToFile:jsonPath atomically:YES];
-                        [fm removeItemAtPath:path error:nil];
-                        [self sendPayloadData:jsonData filePath:jsonPath];
-                    }
-                }
+            NSDictionary* payload = data ? [self payloadFromSignalCrashFileData:data] : nil;
+            if ( !payload ) {
+                // Unreadable, foreign, or stale-format file: delete it so it
+                // isn't reprocessed on every launch.
+                [fm removeItemAtPath:path error:nil];
+                continue;
             }
+            NSData* jsonData = [self toNSData:payload];
+            if ( !jsonData ) {
+                [fm removeItemAtPath:path error:nil];
+                continue;
+            }
+            // Convert to a uniquely-named JSON report on disk, then send from
+            // the JSON path so the report survives a failed send.
+            NSString* jsonPath = [self uniqueSignalReportPathInDirectory:dir];
+            [jsonData writeToFile:jsonPath atomically:YES];
+            [fm removeItemAtPath:path error:nil];
+            [self sendPayloadData:jsonData filePath:jsonPath];
         }
     }
 }
 
-- (NSDictionary*) buildPayloadFromSignalCrashData:(HBSignalCrashData*)crashData
+// Rebuilds a notice from a persisted signal crash file. Every piece of
+// address-space data (frames' image mapping, binary_images) comes from the
+// persisted file — never from live dyld/dladdr, which describe THIS launch's
+// address space, not the crashed one.
+- (NSDictionary*) payloadFromSignalCrashFileData:(NSData*)data
 {
-    NSMutableArray* frames = [NSMutableArray array];
-    // address_count is read from a persisted file and could be corrupt or out
-    // of range; clamp to the fixed addresses[] capacity (128) so we never read
-    // past the buffer.
-    int count = crashData->address_count;
-    if ( count < 0 ) { count = 0; }
-    if ( count > 128 ) { count = 128; }
-    for ( int i = 0; i < count; i++ ) {
-        NSString* addressStr = [NSString stringWithFormat:@"0x%lx", (unsigned long)crashData->addresses[i]];
+    if ( data.length < sizeof(HBSignalCrashHeader) ) return nil;
+    HBSignalCrashHeader header;
+    [data getBytes:&header length:sizeof(header)];
+    if ( header.magic != HB_SIGNAL_CRASH_MAGIC || header.version != HB_SIGNAL_CRASH_VERSION ) return nil;
 
-        Dl_info info;
-        if ( dladdr(crashData->addresses[i], &info) ) {
-            [frames addObject:@{
-                @"file" : info.dli_fname ? [NSString stringWithUTF8String:info.dli_fname] : @"",
-                @"method" : info.dli_sname ? [NSString stringWithUTF8String:info.dli_sname] : addressStr,
-                @"number" : @"",
-                @"address" : addressStr
-            }];
-        } else {
-            [frames addObject:@{
-                @"file" : @"",
-                @"method" : addressStr,
-                @"number" : @"",
-                @"address" : addressStr
-            }];
+    int32_t addressCount = header.address_count;
+    if ( addressCount < 0 ) addressCount = 0;
+    if ( addressCount > HB_MAX_CRASH_ADDRESSES ) addressCount = HB_MAX_CRASH_ADDRESSES;
+
+    int32_t imageCount = header.image_count;
+    if ( imageCount < 0 || imageCount > HB_MAX_BINARY_IMAGES ) return nil;
+    NSUInteger expectedLength = sizeof(HBSignalCrashHeader) + (NSUInteger)imageCount * sizeof(HBBinaryImage);
+    if ( data.length < expectedLength ) return nil;
+
+    const HBBinaryImage* images = (const HBBinaryImage*)((const uint8_t*)data.bytes + sizeof(HBSignalCrashHeader));
+
+    NSMutableArray* frames = [NSMutableArray arrayWithCapacity:(NSUInteger)addressCount];
+    for ( int32_t i = 0; i < addressCount; i++ ) {
+        uint64_t addr = header.addresses[i];
+        NSString* addressStr = [NSString stringWithFormat:@"0x%llx", (unsigned long long)addr];
+
+        // Attribute the address to the persisted image with the greatest
+        // load_address at or below it (image sizes aren't recorded; the
+        // server recomputes this exactly during symbolication).
+        NSString* file = @"";
+        uint64_t bestLoad = 0;
+        for ( int32_t j = 0; j < imageCount; j++ ) {
+            if ( images[j].load_address <= addr && images[j].load_address >= bestLoad ) {
+                bestLoad = images[j].load_address;
+                file = [NSString stringWithUTF8String:images[j].name] ?: @"";
+            }
         }
+        [frames addObject:@{ @"file" : file, @"method" : addressStr, @"number" : @"", @"address" : addressStr }];
     }
 
-    NSString* signalName = [self signalName:crashData->signal_number];
-    NSString* errorClass = [NSString stringWithFormat:@"%@ Signal", shortPlatformName];
+    NSString* signalName = [self signalName:header.signal_number];
+    NSMutableArray* binaryImages = [NSMutableArray arrayWithCapacity:(NSUInteger)imageCount];
+    for ( int32_t i = 0; i < imageCount; i++ ) {
+        [binaryImages addObject:[self dictionaryFromBinaryImage:&images[i]]];
+    }
 
     NSMutableDictionary* payload = [NSMutableDictionary dictionaryWithDictionary:@{
         @"notifier" : @{
@@ -694,8 +720,8 @@ void hb_signal_handler(int signal)
             @"version" : HONEYBADGER_APPLE_SDK_VERSION
         },
         @"error" : @{
-            @"class" : errorClass,
-            @"message" : [NSString stringWithFormat:@"Signal %@ (%d)", signalName, crashData->signal_number],
+            @"class" : [NSString stringWithFormat:@"%@ Signal", shortPlatformName],
+            @"message" : [NSString stringWithFormat:@"Signal %@ (%d)", signalName, header.signal_number],
             @"backtrace" : frames
         },
         @"request" : @{
@@ -704,14 +730,10 @@ void hb_signal_handler(int signal)
         @"server" : @{
             @"environment_name" : [self environment],
             @"hostname" : (self.cachedHostname ?: @""),
-            @"pid" : @([[NSProcessInfo processInfo] processIdentifier])
-        }
+            @"pid" : @(0)  // the crashed process's pid is gone; 0 = unknown
+        },
+        @"binary_images" : binaryImages
     }];
-
-    NSArray* binaryImages = [self captureBinaryImages];
-    if ( binaryImages ) {
-        payload[@"binary_images"] = binaryImages;
-    }
 
     [self addServerRevisionToPayload:payload];
 
