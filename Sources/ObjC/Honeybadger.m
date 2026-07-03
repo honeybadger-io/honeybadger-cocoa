@@ -959,6 +959,10 @@ void hb_signal_handler(int signal)
 
 #if TARGET_OS_SIMULATOR
     return @"simulator";
+#elif DEBUG
+    // Both SPM and CocoaPods compile this SDK from source with the host
+    // app's build configuration, so DEBUG here tracks the app's Debug builds.
+    return @"development";
 #else
     return @"production";
 #endif
