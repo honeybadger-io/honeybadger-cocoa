@@ -7,7 +7,7 @@
 #import "Honeybadger.h"
 #import <objc/runtime.h>
 #include <execinfo.h>
-#import <mach-o/arch.h>
+#include <mach-o/utils.h>
 #include <mach-o/dyld.h>
 #include <mach-o/loader.h>
 #include <dlfcn.h>
@@ -887,7 +887,7 @@ void hb_signal_handler(int signal, siginfo_t* info, void* uap)
             @"errorDomain" : [self stringValueForKey:@"errorDomain" fromDictionary:data defaultValue:@""],
             @"initialHandler" : [self stringValueForKey:@"initialHandler" fromDictionary:data defaultValue:@""],
             @"userInfo" : data[@"userInfo"] ? data[@"userInfo"] : @{},
-            @"architecture" : [NSString stringWithUTF8String:NXGetLocalArchInfo()->name]
+            @"architecture" : [self currentArchitectureName]
         },
         @"context" : (data[@"context"] ? data[@"context"] : (_context ? _context : @{})),
         @"fingerprint" : (data[@"fingerprint"] ? data[@"fingerprint"] : @""),
@@ -1160,6 +1160,14 @@ void hb_signal_handler(int signal, siginfo_t* info, void* uap)
 
 
 
+- (NSString*) currentArchitectureName
+{
+    const char* name = macho_arch_name_for_mach_header(_dyld_get_image_header(0));
+    return name ? [NSString stringWithUTF8String:name] : @"";
+}
+
+
+
 - (NSString*) platformVersion
 {
 #if (TARGET_OS_IOS || TARGET_OS_VISION)
@@ -1395,9 +1403,9 @@ void hb_signal_handler(int signal, siginfo_t* info, void* uap)
             uuid[8], uuid[9],
             uuid[10], uuid[11], uuid[12], uuid[13], uuid[14], uuid[15]];
     }
-    const NXArchInfo* archInfo = NXGetArchInfoFromCpuType(img->cpu_type, img->cpu_subtype);
-    if ( archInfo && archInfo->name ) {
-        imageDict[@"arch"] = [NSString stringWithUTF8String:archInfo->name] ?: @"";
+    const char* archName = macho_arch_name_for_cpu_type(img->cpu_type, img->cpu_subtype);
+    if ( archName ) {
+        imageDict[@"arch"] = [NSString stringWithUTF8String:archName] ?: @"";
     }
     return imageDict;
 }

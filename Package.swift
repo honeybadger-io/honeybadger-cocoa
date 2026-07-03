@@ -5,8 +5,8 @@ import PackageDescription
 let package = Package(
     name: "Honeybadger",
     platforms: [
-        .iOS(.v13),
-        .macOS(.v10_15),
+        .iOS(.v16),
+        .macOS(.v13),
         .visionOS(.v1)
     ],
     products: [

@@ -1,13 +1,13 @@
 Pod::Spec.new do |spec|
 	spec.name = "Honeybadger"
-  	spec.version = "2.0.0"
+	spec.version = "2.0.0"
   	spec.summary = "Honeybadger.io for iOS, macOS, and visionOS"
   	spec.description = "This is the Honeybadger.io SDK for iOS, macOS, and visionOS"
   	spec.homepage = "https://honeybadger.io"
   	spec.license = { :type => "MIT", :file => "LICENSE" }
   	spec.author = { "Andrey Butov" => "andreybutov@antair.com" }
-	spec.ios.deployment_target = "13.0"
-	spec.osx.deployment_target = "10.15"
+	spec.ios.deployment_target = "16.0"
+	spec.osx.deployment_target = "13.0"
 	spec.visionos.deployment_target = "1.0"
   	spec.source = { :git => "https://github.com/honeybadger-io/honeybadger-cocoa.git", :tag => spec.version.to_s }
 	spec.default_subspecs = "Core"

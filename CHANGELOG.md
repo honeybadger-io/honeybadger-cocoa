@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [2.0.0] - 2026-07-03
 ### Breaking
 - `resetContext:(NSDictionary*)` changed to `resetContext` (no arguments). Clears context to an empty dictionary. Use `resetContext` + `setContext:` to replace context with a new dictionary. (This API change is why this release is 2.0.0.)
+- Minimum deployment targets raised to iOS 16.0 and macOS 13.0 (visionOS 1.0 unchanged).
 
 ### Added
 - Binary image capture: crash reports include a `binary_images` array with UUID, load address, ASLR slide, and architecture for each loaded Mach-O image, enabling server-side dSYM symbolication.
@@ -17,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Configurable `revision` for release tracking: `configure(apiKey:environment:revision:)` reports the value as `server.revision`, and `bin/upload-dsyms.sh` accepts a matching `--revision` option. dSYM-to-crash matching remains UUID-based, so revision is optional.
 
 ### Fixed
+- Replaced deprecated `NXArchInfo` APIs with `<mach-o/utils.h>` equivalents; the SDK now compiles warning-free (including under `-Werror`).
 - Signal crash reports carry the context (`setContext:`) from the crashed process. A JSON snapshot is maintained off the crash path and persisted at crash time; previously context was rebuilt on the next launch, losing user/session IDs for signal crashes.
 - Signal crash reports now persist the crashed process's binary images (load addresses, ASLR slides, UUIDs) at crash time. Previously the image list was rebuilt on the next launch, whose ASLR slides differ — so every signal crash symbolicated against the wrong address space.
 - Signal handlers run on a dedicated alternate stack (`SA_ONSTACK`), so stack-overflow crashes — previously uncapturable — are now recorded.
