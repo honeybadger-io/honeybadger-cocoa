@@ -45,6 +45,12 @@ static NSString * const shortPlatformName = @"unknown";
 static int hb_signals[HB_SIGNAL_COUNT] = { SIGABRT, SIGSEGV, SIGBUS, SIGFPE, SIGILL, SIGTRAP };
 static struct sigaction hb_previous_signal_actions[HB_SIGNAL_COUNT];
 static char hb_signal_crash_file_path[PATH_MAX];
+
+// Dedicated stack for fatal-signal delivery. A stack-overflow SIGSEGV arrives
+// on the exhausted thread stack; without this, the handler's own prologue
+// faults and the crash is never recorded. 64KB comfortably exceeds Darwin's
+// SIGSTKSZ and the handler's needs (its large buffers are static).
+static char hb_signal_stack[64 * 1024];
 static NSUncaughtExceptionHandler *hb_previous_exception_handler = NULL;
 
 // Set once an NSException has been captured + persisted by the exception path.
@@ -532,11 +538,25 @@ static void hb_install_appkit_exception_hook(void)
         _dyld_register_func_for_add_image(&hb_on_dyld_image_added);
     });
 
+    // sigaltstack is per-thread; this covers the thread calling configure —
+    // in practice the main thread, where stack overflows are most common.
+    stack_t altStack;
+    memset(&altStack, 0, sizeof(altStack));
+    altStack.ss_sp = hb_signal_stack;
+    altStack.ss_size = sizeof(hb_signal_stack);
+    sigaltstack(&altStack, NULL);
+
+    // Pre-warm backtrace()'s lazy unwinder/dyld state from a normal context so
+    // the crash-time call in hb_signal_handler takes no initialization paths.
+    void* warmup[2];
+    backtrace(warmup, 2);
+
     for ( int i = 0; i < HB_SIGNAL_COUNT; i++ ) {
         struct sigaction action;
         memset(&action, 0, sizeof(action));
         sigemptyset(&action.sa_mask);
         action.sa_handler = hb_signal_handler;
+        action.sa_flags = SA_ONSTACK;
         sigaction(hb_signals[i], &action, &hb_previous_signal_actions[i]);
     }
 }

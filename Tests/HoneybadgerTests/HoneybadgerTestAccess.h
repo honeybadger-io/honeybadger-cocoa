@@ -16,5 +16,6 @@ void hb_capture_exception(NSException* exception, NSString* handlerName);
 - (NSString*) crashReportDirectory;
 - (NSString*) uniqueSignalReportPathInDirectory:(NSString*)dir;
 - (NSDictionary*) payloadFromSignalCrashFileData:(NSData*)data;
+- (void) installSignalHandlers;
 @property (atomic, copy) NSString* cachedHostname;
 @end
