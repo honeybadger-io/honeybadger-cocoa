@@ -33,6 +33,12 @@ let package = Package(
             name: "HoneybadgerTests",
             dependencies: ["Honeybadger"],
             path: "Tests/HoneybadgerTests"
+        ),
+        .executableTarget(
+            name: "HoneybadgerProductionSmoke",
+            dependencies: ["Honeybadger"],
+            path: "Examples/ProductionSmokeTest",
+            exclude: ["README.md", "run_signal_smoke.sh"]
         )
     ]
 )

@@ -47,6 +47,17 @@ fi
 DWARFDUMP_MODE=fail CURL_MODE=ok bash "$UPLOAD" --api-key test --dsym-path "$WORK/dsyms" > "$WORK/out5.log" 2>&1
 check "dwarfdump failure -> warn + exit 1, no abort" 1 $?
 
+CURL_MODE=upload-403-then-ok bash "$UPLOAD" --api-key test --dsym-path "$WORK/dsyms" > "$WORK/out6.log" 2>&1
+check "upload 403 retries without Content-Type -> exit 0" 0 $?
+if grep -q "retrying without Content-Type" "$WORK/out6.log"; then
+    echo "PASS: upload 403 retry was attempted"; PASS=$((PASS+1))
+else
+    echo "FAIL: upload 403 retry was not attempted"; FAIL=$((FAIL+1)); cat "$WORK/out6.log"
+fi
+
+CURL_MODE=header-required bash "$UPLOAD" --api-key test --dsym-path "$WORK/dsyms" > "$WORK/out7.log" 2>&1
+check "presign upload_headers are sent -> exit 0" 0 $?
+
 rm -rf "$WORK"
 echo ""
 echo "$PASS passed, $FAIL failed"

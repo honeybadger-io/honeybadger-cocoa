@@ -166,29 +166,130 @@ print(json.dumps(body))
         continue
     fi
 
-    UPLOAD_URL=$(echo "$BODY" | python3 -c "import sys, json; print(json.load(sys.stdin).get('upload_url', ''))" 2>/dev/null || echo "")
+    PRESIGN_BODY_PATH="$TMPDIR_CLEANUP/${DSYM_NAME}.presign.json"
+    UPLOAD_HEADERS_PATH="$TMPDIR_CLEANUP/${DSYM_NAME}.headers"
+    UPLOAD_FIELDS_PATH="$TMPDIR_CLEANUP/${DSYM_NAME}.fields"
+    printf '%s' "$BODY" > "$PRESIGN_BODY_PATH"
+
+    UPLOAD_URL=$(python3 - "$PRESIGN_BODY_PATH" "$UPLOAD_HEADERS_PATH" "$UPLOAD_FIELDS_PATH" <<'PY' 2>/dev/null || echo ""
+import json, sys
+
+path, headers_path, fields_path = sys.argv[1:4]
+with open(path) as f:
+    body = json.load(f)
+
+upload = body.get("upload") if isinstance(body.get("upload"), dict) else {}
+url = (
+    body.get("upload_url")
+    or body.get("url")
+    or upload.get("url")
+    or upload.get("upload_url")
+    or ""
+)
+
+headers = {}
+for key in ("upload_headers", "headers"):
+    value = body.get(key)
+    if isinstance(value, dict):
+        headers.update(value)
+for key in ("upload_headers", "headers"):
+    value = upload.get(key)
+    if isinstance(value, dict):
+        headers.update(value)
+
+fields = {}
+for key in ("fields", "form", "form_fields"):
+    value = body.get(key)
+    if isinstance(value, dict):
+        fields.update(value)
+for key in ("fields", "form", "form_fields"):
+    value = upload.get(key)
+    if isinstance(value, dict):
+        fields.update(value)
+
+with open(headers_path, "w") as f:
+    for name, value in headers.items():
+        f.write(f"{name}: {value}\n")
+
+with open(fields_path, "w") as f:
+    for name, value in fields.items():
+        f.write(f"{name}\t{value}\n")
+
+print(url)
+PY
+)
 
     if [[ -z "$UPLOAD_URL" ]]; then
-        echo "    Error: No upload_url in response"
+        echo "    Error: No upload URL in response"
         echo "    Response: $BODY"
         FAILED=$((FAILED+1))
         continue
     fi
 
-    # Upload the zip to the presigned URL
+    CURL_UPLOAD_HEADERS=()
+    if [[ -s "$UPLOAD_HEADERS_PATH" ]]; then
+        while IFS= read -r header; do
+            [[ -n "$header" ]] && CURL_UPLOAD_HEADERS+=("-H" "$header")
+        done < "$UPLOAD_HEADERS_PATH"
+    fi
+
+    CURL_UPLOAD_FIELDS=()
+    if [[ -s "$UPLOAD_FIELDS_PATH" ]]; then
+        while IFS=$'\t' read -r field_name field_value; do
+            [[ -n "$field_name" ]] && CURL_UPLOAD_FIELDS+=("-F" "${field_name}=${field_value}")
+        done < "$UPLOAD_FIELDS_PATH"
+    fi
+
+    # Upload the zip. The dSYM API may return either a presigned PUT URL, or a
+    # presigned POST target with form fields. In both cases, honor any headers
+    # returned by the API because S3 signatures can include exact header values.
     echo "    Uploading..."
-    UPLOAD_RESPONSE=$(curl -s -w "\n%{http_code}" \
-        -X PUT \
-        -H "Content-Type: application/zip" \
-        --data-binary "@$ZIP_PATH" \
-        "$UPLOAD_URL") || {
-        echo "    Error: Upload failed (network error)"
-        FAILED=$((FAILED+1))
-        rm -f "$ZIP_PATH"
-        continue
-    }
+    if [[ ${#CURL_UPLOAD_FIELDS[@]} -gt 0 ]]; then
+        UPLOAD_RESPONSE=$(curl -s -w "\n%{http_code}" \
+            -X POST \
+            "${CURL_UPLOAD_HEADERS[@]}" \
+            "${CURL_UPLOAD_FIELDS[@]}" \
+            -F "file=@$ZIP_PATH;type=application/zip" \
+            "$UPLOAD_URL") || {
+            echo "    Error: Upload failed (network error)"
+            FAILED=$((FAILED+1))
+            rm -f "$ZIP_PATH"
+            continue
+        }
+    else
+        PUT_ARGS=(-X PUT --data-binary "@$ZIP_PATH")
+        if [[ ${#CURL_UPLOAD_HEADERS[@]} -gt 0 ]]; then
+            PUT_ARGS+=("${CURL_UPLOAD_HEADERS[@]}")
+        else
+            PUT_ARGS+=("-H" "Content-Type: application/zip")
+        fi
+        UPLOAD_RESPONSE=$(curl -s -w "\n%{http_code}" \
+            "${PUT_ARGS[@]}" \
+            "$UPLOAD_URL") || {
+            echo "    Error: Upload failed (network error)"
+            FAILED=$((FAILED+1))
+            rm -f "$ZIP_PATH"
+            continue
+        }
+    fi
 
     UPLOAD_CODE=$(echo "$UPLOAD_RESPONSE" | tail -1)
+    UPLOAD_BODY=$(echo "$UPLOAD_RESPONSE" | sed '$d')
+
+    if [[ "$UPLOAD_CODE" == "403" && ${#CURL_UPLOAD_FIELDS[@]} -eq 0 && ${#CURL_UPLOAD_HEADERS[@]} -eq 0 ]]; then
+        echo "    Upload returned HTTP 403; retrying without Content-Type header..."
+        UPLOAD_RESPONSE=$(curl -s -w "\n%{http_code}" \
+            -X PUT \
+            --data-binary "@$ZIP_PATH" \
+            "$UPLOAD_URL") || {
+            echo "    Error: Upload retry failed (network error)"
+            FAILED=$((FAILED+1))
+            rm -f "$ZIP_PATH"
+            continue
+        }
+        UPLOAD_CODE=$(echo "$UPLOAD_RESPONSE" | tail -1)
+        UPLOAD_BODY=$(echo "$UPLOAD_RESPONSE" | sed '$d')
+    fi
 
     # Clean up zip
     rm -f "$ZIP_PATH"
@@ -197,6 +298,9 @@ print(json.dumps(body))
         echo "    Upload successful"
     else
         echo "    Error: Upload failed (HTTP $UPLOAD_CODE)"
+        if [[ -n "$UPLOAD_BODY" ]]; then
+            echo "    Response: $UPLOAD_BODY"
+        fi
         FAILED=$((FAILED+1))
         continue
     fi
