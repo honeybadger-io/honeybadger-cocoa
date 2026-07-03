@@ -51,7 +51,7 @@ static NSUncaughtExceptionHandler *hb_previous_exception_handler = NULL;
 // The signal handler reads it (async-signal-safe via sig_atomic_t) to avoid
 // writing a duplicate report for the signal that merely tears the process down
 // afterward — AppKit's crash-on-exceptions trap (SIGTRAP) or abort() (SIGABRT).
-static volatile sig_atomic_t hb_exception_captured = 0;
+volatile sig_atomic_t hb_exception_captured = 0;
 
 #if TARGET_OS_OSX
 static IMP hb_original_report_exception = NULL;
@@ -59,7 +59,7 @@ static IMP hb_original_report_exception = NULL;
 
 void hb_exception_handler(NSException *exception);
 void hb_signal_handler(int signal);
-static void hb_capture_exception(NSException *exception, NSString *handlerName);
+void hb_capture_exception(NSException *exception, NSString *handlerName);
 #if TARGET_OS_OSX
 static void hb_install_appkit_exception_hook(void);
 #endif
@@ -427,7 +427,7 @@ static void hb_on_dyld_image_added(const struct mach_header* header, intptr_t sl
 // Builds a Honeybadger notice from an NSException and persists it to disk.
 // Shared by the uncaught-exception handler and, on macOS, the AppKit
 // -[NSApplication reportException:] hook.
-static void hb_capture_exception(NSException *exception, NSString *handlerName)
+void hb_capture_exception(NSException *exception, NSString *handlerName)
 {
     if ( !exception ) {
         return;
@@ -449,6 +449,16 @@ static void hb_capture_exception(NSException *exception, NSString *handlerName)
     // report is persisted, so a crash mid-persist still falls back to the
     // signal path).
     hb_exception_captured = 1;
+
+    // If the process survives this capture — macOS reportException: with
+    // NSApplicationCrashOnExceptions explicitly disabled by the host app, or a
+    // manual reportException: call — a permanently-set latch would silently
+    // disable signal reporting forever. Clear it on the next main-runloop
+    // turn: a genuinely fatal teardown aborts before this block ever runs, so
+    // the latch stays set exactly as long as the teardown needs it.
+    dispatch_async(dispatch_get_main_queue(), ^{
+        hb_exception_captured = 0;
+    });
 }
 
 void hb_exception_handler(NSException *exception)

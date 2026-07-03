@@ -7,6 +7,7 @@ void run_payload_tests(void);
 void run_pending_report_tests(void);
 void run_binary_image_tests(void);
 void run_signal_replay_tests(void);
+void run_exception_latch_tests(void);
 
 int main(int argc, char** argv)
 {
@@ -17,6 +18,7 @@ int main(int argc, char** argv)
         run_pending_report_tests();
         run_binary_image_tests();
         run_signal_replay_tests();
+        run_exception_latch_tests();
         return hb_test_summary();
     }
 }
