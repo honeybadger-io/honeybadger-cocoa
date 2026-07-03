@@ -106,4 +106,29 @@ void run_signal_replay_tests(void)
     NSDictionary* tornPayload = [hb payloadFromSignalCrashFileData:torn];
     HB_ASSERT_NOT_NIL(tornPayload);
     HB_ASSERT_EQ_OBJ(tornPayload[@"request"][@"context"], @{});
+
+    HB_TEST_BEGIN("testReplayToleratesNonTerminatedImageName");
+    // A corrupt record whose name field has no NUL terminator must not read
+    // past the fixed-size field (the record is the last bytes of the file, so
+    // an overrun would run off the end of the NSData).
+    HBSignalCrashHeader nameHeader;
+    memset(&nameHeader, 0, sizeof(nameHeader));
+    nameHeader.magic = HB_SIGNAL_CRASH_MAGIC;
+    nameHeader.version = HB_SIGNAL_CRASH_VERSION;
+    nameHeader.signal_number = SIGSEGV;
+    nameHeader.address_count = 1;
+    nameHeader.addresses[0] = 0x3000000100;
+    nameHeader.image_count = 1;
+    HBBinaryImage unterminated;
+    memset(&unterminated, 0, sizeof(unterminated));
+    memset(unterminated.name, 'A', sizeof(unterminated.name));  // no NUL
+    unterminated.load_address = 0x3000000000;
+    NSMutableData* nameData = [NSMutableData dataWithBytes:&nameHeader length:sizeof(nameHeader)];
+    [nameData appendBytes:&unterminated length:sizeof(unterminated)];
+    NSDictionary* namePayload = [hb payloadFromSignalCrashFileData:nameData];
+    HB_ASSERT_NOT_NIL(namePayload);
+    NSString* imageName = namePayload[@"binary_images"][0][@"name"];
+    HB_ASSERT_EQ_INT((int)imageName.length, (int)sizeof(unterminated.name));
+    NSString* frameFile = namePayload[@"error"][@"backtrace"][0][@"file"];
+    HB_ASSERT_EQ_INT((int)frameFile.length, (int)sizeof(unterminated.name));
 }

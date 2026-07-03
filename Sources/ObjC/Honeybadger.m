@@ -113,8 +113,19 @@ void hb_refresh_binary_images(void)
     hb_binary_image_count = out;
 }
 
+// Suppresses the dyld callback until initial registration completes:
+// _dyld_register_func_for_add_image synchronously invokes the callback once
+// per already-loaded image, and each invocation rebuilds the whole table —
+// O(N^2) work at configure time for N loaded images. Registration runs with
+// the callback suppressed, then a single refresh covers everything loaded up
+// to that point; the callback handles later loads.
+static volatile sig_atomic_t hb_dyld_registration_complete = 0;
+
 static void hb_on_dyld_image_added(const struct mach_header* header, intptr_t slide)
 {
+    if ( !hb_dyld_registration_complete ) {
+        return;
+    }
     // Full rebuild keeps this trivially correct; image loads are rare after
     // startup. Runs in normal context (dyld callbacks are not signal context).
     hb_refresh_binary_images();
@@ -567,13 +578,15 @@ static void hb_install_appkit_exception_hook(void)
 
 - (void) installSignalHandlers
 {
-    hb_refresh_binary_images();
     static dispatch_once_t dyldOnce;
     dispatch_once(&dyldOnce, ^{
-        // Note: registration synchronously invokes the callback once per
-        // already-loaded image; the redundant rebuilds are cheap and one-time.
+        // Callback is suppressed during registration (see
+        // hb_dyld_registration_complete); the refresh below covers every image
+        // loaded up to this point, and the callback covers later loads.
         _dyld_register_func_for_add_image(&hb_on_dyld_image_added);
+        hb_dyld_registration_complete = 1;
     });
+    hb_refresh_binary_images();
 
     // sigaltstack is per-thread; this covers the thread calling configure —
     // in practice the main thread, where stack overflows are most common.
@@ -591,7 +604,10 @@ static void hb_install_appkit_exception_hook(void)
     for ( int i = 0; i < HB_SIGNAL_COUNT; i++ ) {
         struct sigaction action;
         memset(&action, 0, sizeof(action));
-        sigemptyset(&action.sa_mask);
+        // Block the other fatal signals while the handler runs so a
+        // same-thread async signal can't interrupt it mid-write. Cross-thread
+        // concurrent crashes are handled by hb_handler_entered in the handler.
+        sigfillset(&action.sa_mask);
         action.sa_sigaction = hb_signal_handler;
         action.sa_flags = SA_ONSTACK | SA_SIGINFO;
         sigaction(hb_signals[i], &action, &hb_previous_signal_actions[i]);
@@ -633,8 +649,21 @@ void hb_chain_previous_signal(int signal, siginfo_t* info, void* uap)
     }
 }
 
+// One-shot entry latch for the capture path. The handler writes shared static
+// buffers and a single crash file, so a second fatal signal — another thread
+// crashing concurrently (sa_mask is per-thread and can't prevent that), or a
+// fault inside the handler itself — must not re-enter the capture path; it
+// chains straight to the predecessor instead. __sync_lock_test_and_set is
+// lock-free and async-signal-safe on all supported targets.
+static volatile sig_atomic_t hb_handler_entered = 0;
+
 void hb_signal_handler(int signal, siginfo_t* info, void* uap)
 {
+    if ( __sync_lock_test_and_set((sig_atomic_t*)&hb_handler_entered, 1) ) {
+        hb_chain_previous_signal(signal, info, uap);
+        return;
+    }
+
     // If an NSException was already captured and persisted by the exception
     // path, this signal is just the process teardown that follows it (AppKit's
     // crash-on-exceptions trap, or abort() after an uncaught exception). Don't
@@ -645,8 +674,9 @@ void hb_signal_handler(int signal, siginfo_t* info, void* uap)
         return;
     }
 
-    // Crash handling is one-shot per process, so static buffers are safe here
-    // and keep ~5KB of state off the (possibly exhausted) crashing stack.
+    // The entry latch makes crash handling one-shot per process, so static
+    // buffers are safe here and keep ~5KB of state off the (possibly
+    // exhausted) crashing stack.
     static HBSignalCrashHeader header;
     memset(&header, 0, sizeof(header));
     header.magic = HB_SIGNAL_CRASH_MAGIC;
@@ -764,7 +794,12 @@ void hb_signal_handler(int signal, siginfo_t* info, void* uap)
             // Convert to a uniquely-named JSON report on disk, then send from
             // the JSON path so the report survives a failed send.
             NSString* jsonPath = [self uniqueSignalReportPathInDirectory:dir];
-            [jsonData writeToFile:jsonPath atomically:YES];
+            if ( ![jsonData writeToFile:jsonPath atomically:YES] ) {
+                // JSON write failed (disk full, permissions): keep the .bin —
+                // it's the only persisted copy — and retry conversion on the
+                // next launch.
+                continue;
+            }
             [fm removeItemAtPath:path error:nil];
             [self sendPayloadData:jsonData filePath:jsonPath];
         }
@@ -823,7 +858,7 @@ void hb_signal_handler(int signal, siginfo_t* info, void* uap)
         for ( int32_t j = 0; j < imageCount; j++ ) {
             if ( images[j].load_address <= addr && images[j].load_address >= bestLoad ) {
                 bestLoad = images[j].load_address;
-                file = [NSString stringWithUTF8String:images[j].name] ?: @"";
+                file = [self stringFromImageName:&images[j]];
             }
         }
         [frames addObject:@{ @"file" : file, @"method" : addressStr, @"number" : @"", @"address" : addressStr }];
@@ -1162,7 +1197,8 @@ void hb_signal_handler(int signal, siginfo_t* info, void* uap)
 
 - (NSString*) currentArchitectureName
 {
-    const char* name = macho_arch_name_for_mach_header(_dyld_get_image_header(0));
+    const struct mach_header* header = _dyld_get_image_header(0);
+    const char* name = header ? macho_arch_name_for_mach_header(header) : NULL;
     return name ? [NSString stringWithUTF8String:name] : @"";
 }
 
@@ -1387,10 +1423,22 @@ void hb_signal_handler(int signal, siginfo_t* info, void* uap)
     return images;
 }
 
+// The name field of a persisted image record is untrusted input: a torn or
+// corrupt crash file may not be NUL-terminated, and stringWithUTF8String:
+// would read past the fixed-size field (past the end of the NSData for the
+// last record). Copy into a bounded buffer and force-terminate first.
+- (NSString*) stringFromImageName:(const HBBinaryImage*)img
+{
+    char name[sizeof(img->name) + 1];
+    memcpy(name, img->name, sizeof(img->name));
+    name[sizeof(img->name)] = '\0';
+    return [NSString stringWithUTF8String:name] ?: @"";
+}
+
 - (NSDictionary*) dictionaryFromBinaryImage:(const HBBinaryImage*)img
 {
     NSMutableDictionary* imageDict = [NSMutableDictionary dictionary];
-    imageDict[@"name"] = [NSString stringWithUTF8String:img->name] ?: @"";
+    imageDict[@"name"] = [self stringFromImageName:img];
     imageDict[@"load_address"] = [NSString stringWithFormat:@"0x%llx", (unsigned long long)img->load_address];
     imageDict[@"vmaddr_slide"] = [NSString stringWithFormat:@"0x%llx", (unsigned long long)img->vmaddr_slide];
     if ( img->has_uuid ) {

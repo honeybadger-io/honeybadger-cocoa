@@ -9,8 +9,12 @@ export PATH="$SCRIPT_DIR/stubs:$PATH"
 
 PASS=0; FAIL=0
 
+# EXIT trap so the temp dir is cleaned up even if an early failure (e.g. a
+# set -u error) exits the script before the end.
+WORK=$(mktemp -d)
+trap 'rm -rf "$WORK"' EXIT
+
 make_dsyms() {
-    WORK=$(mktemp -d)
     mkdir -p "$WORK/dsyms/AppOne.dSYM/Contents/Resources/DWARF"
     echo fake > "$WORK/dsyms/AppOne.dSYM/Contents/Resources/DWARF/AppOne"
     mkdir -p "$WORK/dsyms/AppTwo.dSYM/Contents/Resources/DWARF"
@@ -58,7 +62,6 @@ fi
 CURL_MODE=header-required bash "$UPLOAD" --api-key test --dsym-path "$WORK/dsyms" > "$WORK/out7.log" 2>&1
 check "presign upload_headers are sent -> exit 0" 0 $?
 
-rm -rf "$WORK"
 echo ""
 echo "$PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]]
