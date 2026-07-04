@@ -111,16 +111,26 @@ HB_PRIVATE void hb_refresh_binary_images(void)
 
         BOOL is64 = (header->magic == MH_MAGIC_64 || header->magic == MH_CIGAM_64);
         uintptr_t cursor = (uintptr_t)header + (is64 ? sizeof(struct mach_header_64) : sizeof(struct mach_header));
+        uint64_t vmEnd = 0;  // max unslid segment end; slid below
         for ( uint32_t j = 0; j < header->ncmds; j++ ) {
             const struct load_command* cmd = (const struct load_command*)cursor;
             if ( cmd->cmd == LC_UUID ) {
                 const struct uuid_command* uuidCmd = (const struct uuid_command*)cursor;
                 memcpy(img->uuid, uuidCmd->uuid, 16);
                 img->has_uuid = 1;
-                break;
+            } else if ( cmd->cmd == LC_SEGMENT_64 ) {
+                const struct segment_command_64* seg = (const struct segment_command_64*)cursor;
+                if ( seg->vmaddr + seg->vmsize > vmEnd ) vmEnd = seg->vmaddr + seg->vmsize;
+            } else if ( cmd->cmd == LC_SEGMENT ) {
+                const struct segment_command* seg = (const struct segment_command*)cursor;
+                if ( (uint64_t)seg->vmaddr + seg->vmsize > vmEnd ) vmEnd = (uint64_t)seg->vmaddr + seg->vmsize;
             }
             cursor += cmd->cmdsize;
         }
+        // load_address is the slid __TEXT address; vmEnd is unslid, so the
+        // mapped extent from load_address is (vmEnd + slide) - load_address.
+        uint64_t slidEnd = vmEnd + img->vmaddr_slide;
+        img->size = (vmEnd > 0 && slidEnd > img->load_address) ? (slidEnd - img->load_address) : 0;
         out++;
     }
     hb_binary_image_count = out;
@@ -888,16 +898,20 @@ HB_PRIVATE void hb_signal_handler(int signal, siginfo_t* info, void* uap)
         uint64_t addr = header.addresses[i];
         NSString* addressStr = [NSString stringWithFormat:@"0x%llx", (unsigned long long)addr];
 
-        // Attribute the address to the persisted image with the greatest
-        // load_address at or below it (image sizes aren't recorded; the
-        // server recomputes this exactly during symbolication).
+        // Attribute the address to the recorded image whose mapped range
+        // [load_address, load_address + size) contains it. With the table
+        // capped (HB_MAX_BINARY_IMAGES), an address inside a dropped image
+        // must stay honestly unattributed ("") rather than be blamed on the
+        // nearest recorded image below it. size == 0 (unknown) falls back to
+        // the nearest-below heuristic for that image.
         NSString* file = @"";
         uint64_t bestLoad = 0;
         for ( int32_t j = 0; j < imageCount; j++ ) {
-            if ( images[j].load_address <= addr && images[j].load_address >= bestLoad ) {
-                bestLoad = images[j].load_address;
-                file = [self stringFromImageName:&images[j]];
-            }
+            uint64_t load = images[j].load_address;
+            if ( load > addr || load < bestLoad ) continue;
+            if ( images[j].size != 0 && addr >= load + images[j].size ) continue;
+            bestLoad = load;
+            file = [self stringFromImageName:&images[j]];
         }
         [frames addObject:@{ @"file" : file, @"method" : addressStr, @"number" : @"", @"address" : addressStr }];
     }
@@ -1479,6 +1493,7 @@ HB_PRIVATE void hb_signal_handler(int signal, siginfo_t* info, void* uap)
     imageDict[@"name"] = [self stringFromImageName:img];
     imageDict[@"load_address"] = [NSString stringWithFormat:@"0x%llx", (unsigned long long)img->load_address];
     imageDict[@"vmaddr_slide"] = [NSString stringWithFormat:@"0x%llx", (unsigned long long)img->vmaddr_slide];
+    imageDict[@"size"] = [NSString stringWithFormat:@"0x%llx", (unsigned long long)img->size];
     if ( img->has_uuid ) {
         const uint8_t* uuid = img->uuid;
         imageDict[@"uuid"] = [NSString stringWithFormat:

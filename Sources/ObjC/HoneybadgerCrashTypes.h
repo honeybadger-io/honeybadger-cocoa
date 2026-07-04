@@ -7,7 +7,7 @@
 // pointer-free, and memcpy-safe: the signal handler persists this struct
 // verbatim with write(), and the next launch reads it back. Field order and
 // sizes are part of the crash-file format (see HB_SIGNAL_CRASH_VERSION).
-#define HB_MAX_BINARY_IMAGES 512
+#define HB_MAX_BINARY_IMAGES 1024
 
 typedef struct {
     char          name[512];
@@ -16,6 +16,7 @@ typedef struct {
     uint8_t       _pad[7];
     uint64_t      load_address;
     uint64_t      vmaddr_slide;
+    uint64_t      size;          // mapped bytes from load_address; 0 = unknown
     cpu_type_t    cpu_type;
     cpu_subtype_t cpu_subtype;
 } HBBinaryImage;
@@ -26,7 +27,8 @@ typedef struct {
 // from the signal handler. magic/version let the reader reject foreign or
 // stale files.
 #define HB_SIGNAL_CRASH_MAGIC   0x48425343u  /* "HBSC" */
-#define HB_SIGNAL_CRASH_VERSION 3u
+// v4 = per-image `size` + 1024-image cap (v3: no size, 512 cap).
+#define HB_SIGNAL_CRASH_VERSION 4u
 #define HB_MAX_CRASH_ADDRESSES  128
 #define HB_MAX_CONTEXT_JSON     8192
 

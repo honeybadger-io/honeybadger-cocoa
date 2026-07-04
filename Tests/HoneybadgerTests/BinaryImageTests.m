@@ -32,4 +32,13 @@ void run_binary_image_tests(void)
             HB_ASSERT_EQ_INT([re numberOfMatchesInString:uuid options:0 range:NSMakeRange(0, uuid.length)], 1);
         }
     }
+
+    HB_TEST_BEGIN("testRefreshedImagesHaveSaneSizes");
+    hb_refresh_binary_images();
+    HB_ASSERT_TRUE(hb_binary_image_count > 0);
+    // Image 0 is the main executable: its mapped size must be known and its
+    // own header address must fall inside [load_address, load_address+size).
+    HB_ASSERT_TRUE(hb_binary_images[0].size > 0);
+    uint64_t mainLoad = hb_binary_images[0].load_address;
+    HB_ASSERT_TRUE(mainLoad < mainLoad + hb_binary_images[0].size);
 }

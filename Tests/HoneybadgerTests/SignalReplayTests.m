@@ -17,9 +17,10 @@ static NSData* synthetic_crash_data(void)
     header.magic = HB_SIGNAL_CRASH_MAGIC;
     header.version = HB_SIGNAL_CRASH_VERSION;
     header.signal_number = SIGSEGV;
-    header.address_count = 2;
+    header.address_count = 3;
     header.addresses[0] = 0x1000000500;  // inside image A
     header.addresses[1] = 0x2000000900;  // inside image B
+    header.addresses[2] = 0x1800000000;  // between A's end and B — no image
     header.image_count = 2;
     header.context_length = (int32_t)strlen(kSyntheticContextJSON);
 
@@ -30,8 +31,10 @@ static NSData* synthetic_crash_data(void)
     images[0].vmaddr_slide = 0x0000000042;
     images[0].has_uuid = 1;
     memset(images[0].uuid, 0xAB, 16);
+    images[0].size = 0x1000;
     strlcpy(images[1].name, "/usr/lib/libFake.dylib", sizeof(images[1].name));
     images[1].load_address = 0x2000000000;
+    images[1].size = 0x1000;
 
     NSMutableData* data = [NSMutableData dataWithBytes:&header length:sizeof(header)];
     [data appendBytes:images length:sizeof(images)];
@@ -48,6 +51,7 @@ void run_signal_replay_tests(void)
     HB_ASSERT_EQ_INT(images.count, 2u);
     HB_ASSERT_EQ_OBJ(images[0][@"load_address"], @"0x1000000000");
     HB_ASSERT_EQ_OBJ(images[0][@"vmaddr_slide"], @"0x42");
+    HB_ASSERT_EQ_OBJ(images[0][@"size"], @"0x1000");
     HB_ASSERT_EQ_OBJ(images[0][@"name"], @"/App/CrashedApp");
     HB_ASSERT_EQ_OBJ(images[0][@"uuid"], @"ABABABAB-ABAB-ABAB-ABAB-ABABABABABAB");
     HB_ASSERT_NIL(images[1][@"uuid"]);  // has_uuid = 0 → omitted
@@ -56,10 +60,13 @@ void run_signal_replay_tests(void)
     HB_TEST_BEGIN("testReplayFramesMapAddressesToPersistedImages");
     payload = [[Honeybadger sharedInstance] payloadFromSignalCrashFileData:synthetic_crash_data()];
     NSArray* frames = payload[@"error"][@"backtrace"];
-    HB_ASSERT_EQ_INT(frames.count, 2u);
+    HB_ASSERT_EQ_INT(frames.count, 3u);
     HB_ASSERT_EQ_OBJ(frames[0][@"address"], @"0x1000000500");
     HB_ASSERT_EQ_OBJ(frames[0][@"file"], @"/App/CrashedApp");
     HB_ASSERT_EQ_OBJ(frames[1][@"file"], @"/usr/lib/libFake.dylib");
+    // Address in the gap between recorded images: sizes are recorded, so it
+    // must be honestly unattributed, not blamed on the nearest image below.
+    HB_ASSERT_EQ_OBJ(frames[2][@"file"], @"");
     HB_ASSERT_EQ_OBJ(payload[@"error"][@"message"], @"Signal SIGSEGV (11)");
 
     HB_TEST_BEGIN("testReplayRejectsCorruptData");
@@ -91,6 +98,14 @@ void run_signal_replay_tests(void)
     [overclaimed replaceBytesInRange:NSMakeRange(offsetof(HBSignalCrashHeader, context_length), sizeof(int32_t))
                            withBytes:&overclaimedContextLength];
     HB_ASSERT_NIL([hb payloadFromSignalCrashFileData:overclaimed]);
+
+    // v3 (beta.1/beta.2 layout: no per-image size) must be rejected too —
+    // its HBBinaryImage records are 8 bytes shorter, so reading it as v4
+    // would misparse every image.
+    NSMutableData* v3File = [synthetic_crash_data() mutableCopy];
+    uint32_t three = 3;
+    [v3File replaceBytesInRange:NSMakeRange(4, 4) withBytes:&three];
+    HB_ASSERT_NIL([hb payloadFromSignalCrashFileData:v3File]);
 
     HB_TEST_BEGIN("testReplayToleratesUnparseableContext");
     HBSignalCrashHeader header;
