@@ -1,6 +1,19 @@
 #import "HBTest.h"
 #import "HoneybadgerTestAccess.h"
 #include <signal.h>
+#include <pthread.h>
+
+static void* hb_altstack_probe(void* arg)
+{
+    // Runs on a brand-new pthread. If the introspection hook installed an
+    // alternate stack for this thread, sigaltstack reports it enabled.
+    stack_t st;
+    int* ok = (int*)arg;
+    *ok = (sigaltstack(NULL, &st) == 0
+           && !(st.ss_flags & SS_DISABLE)
+           && st.ss_size >= (size_t)MINSIGSTKSZ);
+    return NULL;
+}
 
 void run_signal_install_tests(void)
 {
@@ -26,4 +39,11 @@ void run_signal_install_tests(void)
     HB_ASSERT_TRUE(ss.ss_size >= (size_t)MINSIGSTKSZ);
 
     for ( int i = 0; i < 6; i++ ) { sigaction(signals[i], &saved[i], NULL); }
+
+    HB_TEST_BEGIN("testNewThreadsGetAlternateSignalStack");
+    int altStackOK = 0;
+    pthread_t probeThread;
+    HB_ASSERT_EQ_INT(pthread_create(&probeThread, NULL, hb_altstack_probe, &altStackOK), 0);
+    pthread_join(probeThread, NULL);
+    HB_ASSERT_TRUE(altStackOK);
 }

@@ -1,9 +1,12 @@
 // Integration-test harness: a tiny CLI that links the SDK source directly.
 // Modes:
-//   crash    - configure, record own load address, die via SIGSEGV
-//   overflow - configure, die via stack-overflow SIGSEGV (proves SA_ONSTACK)
-//   replay   - configure (triggers pending-report conversion), record own
-//              load address, spin briefly so the .bin -> .json conversion runs
+//   crash          - configure, record own load address, die via SIGSEGV
+//   overflow       - configure, die via stack-overflow SIGSEGV (proves SA_ONSTACK)
+//   overflow-thread - configure, die via stack-overflow SIGSEGV on a thread
+//                     created after configure (proves per-thread alt stacks)
+//   replay         - configure (triggers pending-report conversion), record
+//                     own load address, spin briefly so the .bin -> .json
+//                     conversion runs
 #import <Foundation/Foundation.h>
 #import "Honeybadger.h"
 #include <mach-o/dyld.h>
@@ -33,6 +36,11 @@ int main(int argc, char** argv) {
             *p = 42;  // SIGSEGV
         } else if ( [mode isEqualToString:@"overflow"] ) {
             return (int)recurse(0);  // stack-overflow SIGSEGV
+        } else if ( [mode isEqualToString:@"overflow-thread"] ) {
+            // Stack overflow on a thread created AFTER configure — captured
+            // only if the introspection hook gave that thread an alt stack.
+            [NSThread detachNewThreadWithBlock:^{ recurse(0); }];
+            [[NSRunLoop mainRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:10]];
         } else if ( [mode isEqualToString:@"replay"] ) {
             // Let sendPendingCrashReports convert the .bin and attempt (and
             // fail, with the bogus key) the network send, leaving the .json.

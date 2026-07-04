@@ -71,6 +71,11 @@ rm -f "$REPORT_DIR"/signal_crash.bin "$REPORT_DIR"/crash_signal_*.json
 "$WORK/harness" overflow "$WORK" && bad "overflow run should exit nonzero" || ok "overflow run died as expected"
 [[ -f "$REPORT_DIR/signal_crash.bin" ]] && ok "stack-overflow crash captured (alt stack works)" || bad "stack-overflow crash NOT captured"
 
+echo "Run 4: stack overflow on a background thread (requires per-thread alt stack)..."
+rm -f "$REPORT_DIR"/signal_crash.bin "$REPORT_DIR"/crash_signal_*.json
+"$WORK/harness" overflow-thread "$WORK" && bad "overflow-thread run should exit nonzero" || ok "overflow-thread run died as expected"
+[[ -f "$REPORT_DIR/signal_crash.bin" ]] && ok "background-thread stack overflow captured" || bad "background-thread stack overflow NOT captured"
+
 echo ""
 echo "$PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]]

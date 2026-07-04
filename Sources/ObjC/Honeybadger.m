@@ -13,6 +13,7 @@
 #include <dlfcn.h>
 #include <signal.h>
 #include <pthread.h>
+#include <pthread/introspection.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <limits.h>
@@ -64,6 +65,56 @@ static char hb_signal_crash_file_path[PATH_MAX];
 // faults and the crash is never recorded. 64KB comfortably exceeds Darwin's
 // MINSIGSTKSZ (32KB) and the handler's needs (its large buffers are static).
 static char hb_signal_stack[64 * 1024];
+
+// Alternate stacks for threads created after configure. sigaltstack() is
+// per-thread and no API can install a stack on another already-running
+// thread, so installSignalHandlers covers only its own (configure) thread
+// with hb_signal_stack; this pthread introspection hook covers every thread
+// born afterward. THREAD_START runs on the new thread itself in normal
+// context (malloc is fine here — this is NOT the signal handler). The
+// malloc'd stack is virtual until a signal actually touches it. Ownership is
+// tracked in thread-specific data so TERMINATE frees only stacks WE
+// installed — never the host app's or another SDK's — and a pre-existing
+// alt stack is left alone. Threads alive before configure (other than the
+// configure thread) remain uncovered.
+static pthread_key_t hb_thread_alt_stack_key;
+static pthread_introspection_hook_t hb_previous_introspection_hook;
+
+static void hb_thread_introspection_hook(unsigned int event, pthread_t thread, void* addr, size_t size)
+{
+    if ( event == PTHREAD_INTROSPECTION_THREAD_START ) {
+        stack_t existing;
+        if ( sigaltstack(NULL, &existing) == 0 && (existing.ss_flags & SS_DISABLE) ) {
+            void* stackMem = malloc(sizeof(hb_signal_stack));
+            if ( stackMem ) {
+                stack_t altStack;
+                memset(&altStack, 0, sizeof(altStack));
+                altStack.ss_sp = stackMem;
+                altStack.ss_size = sizeof(hb_signal_stack);
+                if ( sigaltstack(&altStack, NULL) == 0 ) {
+                    pthread_setspecific(hb_thread_alt_stack_key, stackMem);
+                } else {
+                    free(stackMem);
+                }
+            }
+        }
+    } else if ( event == PTHREAD_INTROSPECTION_THREAD_TERMINATE ) {
+        // Runs on the terminating thread, before TSD teardown.
+        void* stackMem = pthread_getspecific(hb_thread_alt_stack_key);
+        if ( stackMem ) {
+            stack_t disable;
+            memset(&disable, 0, sizeof(disable));
+            disable.ss_flags = SS_DISABLE;
+            sigaltstack(&disable, NULL);
+            free(stackMem);
+            pthread_setspecific(hb_thread_alt_stack_key, NULL);
+        }
+    }
+    if ( hb_previous_introspection_hook ) {
+        hb_previous_introspection_hook(event, thread, addr, size);
+    }
+}
+
 static NSUncaughtExceptionHandler *hb_previous_exception_handler = NULL;
 
 // Set once an NSException has been captured + persisted by the exception path.
@@ -614,13 +665,23 @@ static void hb_install_appkit_exception_hook(void)
     });
     hb_refresh_binary_images();
 
-    // sigaltstack is per-thread; this covers the thread calling configure —
-    // in practice the main thread, where stack overflows are most common.
+    // sigaltstack is per-thread; this call covers the thread calling
+    // configure (in practice the main thread). Threads created afterward are
+    // covered by hb_thread_introspection_hook below; threads already alive
+    // stay uncovered — no API can reach them.
     stack_t altStack;
     memset(&altStack, 0, sizeof(altStack));
     altStack.ss_sp = hb_signal_stack;
     altStack.ss_size = sizeof(hb_signal_stack);
     sigaltstack(&altStack, NULL);
+
+    static dispatch_once_t introspectionOnce;
+    dispatch_once(&introspectionOnce, ^{
+        if ( pthread_key_create(&hb_thread_alt_stack_key, NULL) == 0 ) {
+            hb_previous_introspection_hook =
+                pthread_introspection_hook_install(hb_thread_introspection_hook);
+        }
+    });
 
     // Pre-warm backtrace()'s lazy unwinder/dyld state from a normal context so
     // the crash-time call in hb_signal_handler takes no initialization paths.
