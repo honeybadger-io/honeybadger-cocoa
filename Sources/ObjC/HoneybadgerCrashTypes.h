@@ -16,7 +16,7 @@ typedef struct {
     uint8_t       _pad[7];
     uint64_t      load_address;
     uint64_t      vmaddr_slide;
-    uint64_t      size;          // mapped bytes from load_address; 0 = unknown
+    uint64_t      size;          // __TEXT (executable) bytes from load_address; 0 = unknown
     cpu_type_t    cpu_type;
     cpu_subtype_t cpu_subtype;
 } HBBinaryImage;

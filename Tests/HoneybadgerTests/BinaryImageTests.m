@@ -41,4 +41,18 @@ void run_binary_image_tests(void)
     HB_ASSERT_TRUE(hb_binary_images[0].size > 0);
     uint64_t mainLoad = hb_binary_images[0].load_address;
     HB_ASSERT_TRUE(mainLoad < mainLoad + hb_binary_images[0].size);
+
+    HB_TEST_BEGIN("testImageSizesAreTextExtentsNotCacheSpans");
+    // Shared-cache dylibs relocate __LINKEDIT/__DATA into distant cache
+    // regions; a size derived from max segment end spans whole cache regions
+    // (gigabytes) and would swallow the gaps between neighboring dylibs.
+    // __TEXT extents are modest and nonzero for every real image. Aggregated
+    // into one assertion so the suite's count stays machine-independent.
+    int badSizeCount = 0;
+    for ( int i = 0; i < hb_binary_image_count; i++ ) {
+        if ( hb_binary_images[i].size == 0 || hb_binary_images[i].size >= 0x40000000ULL ) {
+            badSizeCount++;
+        }
+    }
+    HB_ASSERT_EQ_INT(badSizeCount, 0);
 }

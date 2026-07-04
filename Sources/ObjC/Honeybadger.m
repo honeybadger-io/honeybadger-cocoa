@@ -162,7 +162,7 @@ HB_PRIVATE void hb_refresh_binary_images(void)
 
         BOOL is64 = (header->magic == MH_MAGIC_64 || header->magic == MH_CIGAM_64);
         uintptr_t cursor = (uintptr_t)header + (is64 ? sizeof(struct mach_header_64) : sizeof(struct mach_header));
-        uint64_t vmEnd = 0;  // max unslid segment end; slid below
+        uint64_t textSize = 0;  // vmsize of __TEXT, the segment load_address points at
         for ( uint32_t j = 0; j < header->ncmds; j++ ) {
             const struct load_command* cmd = (const struct load_command*)cursor;
             if ( cmd->cmd == LC_UUID ) {
@@ -171,17 +171,21 @@ HB_PRIVATE void hb_refresh_binary_images(void)
                 img->has_uuid = 1;
             } else if ( cmd->cmd == LC_SEGMENT_64 ) {
                 const struct segment_command_64* seg = (const struct segment_command_64*)cursor;
-                if ( seg->vmaddr + seg->vmsize > vmEnd ) vmEnd = seg->vmaddr + seg->vmsize;
+                if ( strncmp(seg->segname, SEG_TEXT, sizeof(seg->segname)) == 0 ) textSize = seg->vmsize;
             } else if ( cmd->cmd == LC_SEGMENT ) {
                 const struct segment_command* seg = (const struct segment_command*)cursor;
-                if ( (uint64_t)seg->vmaddr + seg->vmsize > vmEnd ) vmEnd = (uint64_t)seg->vmaddr + seg->vmsize;
+                if ( strncmp(seg->segname, SEG_TEXT, sizeof(seg->segname)) == 0 ) textSize = (uint64_t)seg->vmsize;
             }
             cursor += cmd->cmdsize;
         }
-        // load_address is the slid __TEXT address; vmEnd is unslid, so the
-        // mapped extent from load_address is (vmEnd + slide) - load_address.
-        uint64_t slidEnd = vmEnd + img->vmaddr_slide;
-        img->size = (vmEnd > 0 && slidEnd > img->load_address) ? (slidEnd - img->load_address) : 0;
+        // load_address is the slid __TEXT address, so __TEXT's vmsize IS the
+        // image's extent from load_address. Deliberately NOT the max segment
+        // end: dyld-shared-cache dylibs relocate __LINKEDIT/__DATA into
+        // distant cache regions, and a max-end size would swallow the gaps
+        // between neighboring dylibs, misattributing frames. Backtrace
+        // addresses are code addresses, so bounding attribution to __TEXT
+        // loses nothing.
+        img->size = textSize;
         out++;
     }
     hb_binary_image_count = out;
