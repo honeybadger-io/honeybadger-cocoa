@@ -60,9 +60,8 @@ print("PASS: replayed report symbolication data comes from the crashed process")
 ctx = payload.get("request", {}).get("context", {})
 assert ctx.get("integration_user") == "user-42", f"context lost: {ctx}"
 print("PASS: crashed-run context survived into the replayed report")
-host = payload.get("server", {}).get("hostname", "")
-assert host, "server.hostname empty on replayed signal report (sent before hostname resolved)"
-print("PASS: replayed report carries server.hostname")
+assert "hostname" not in payload.get("server", {}), "hostname should no longer be collected"
+print("PASS: replayed report omits server.hostname")
 EOF
 [[ $? -eq 0 ]] && PASS=$((PASS+1)) || FAIL=$((FAIL+1))
 

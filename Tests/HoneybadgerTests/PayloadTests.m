@@ -3,9 +3,8 @@
 
 void run_payload_tests(void)
 {
-    HB_TEST_BEGIN("testBuildPayloadUsesCachedHostname");
+    HB_TEST_BEGIN("testBuildPayloadOmitsHostname");
     Honeybadger* hb = [Honeybadger sharedInstance];
-    hb.cachedHostname = @"test-host.example";
     NSDictionary* payload = [hb buildPayload:@{ @"errorClass" : @"X", @"errorMsg" : @"y" }];
-    HB_ASSERT_EQ_OBJ(payload[@"server"][@"hostname"], @"test-host.example");
+    HB_ASSERT_NIL(payload[@"server"][@"hostname"]);
 }

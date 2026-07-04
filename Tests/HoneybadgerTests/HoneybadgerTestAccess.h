@@ -29,5 +29,4 @@ void hb_signal_handler(int signal, siginfo_t* info, void* uap);
 - (void) installSignalHandlers;
 - (void) refreshContextSnapshot;
 - (NSMutableDictionary*) context;
-@property (atomic, copy) NSString* cachedHostname;
 @end

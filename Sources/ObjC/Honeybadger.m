@@ -231,7 +231,6 @@ HB_PRIVATE volatile int hb_context_json_length = 0;
 @property (nonatomic) NSString* customRevision;
 @property (nonatomic) BOOL initialized;
 @property (nonatomic) NSMutableDictionary<NSString*, NSString*>* context;
-@property (atomic, copy) NSString* cachedHostname;
 
 @end
 
@@ -296,15 +295,10 @@ HB_PRIVATE volatile int hb_context_json_length = 0;
     [hb installSignalHandlers];
     hb.initialized = TRUE;
 
-    // -[NSProcessInfo hostName] can perform a blocking reverse-DNS lookup
-    // (seconds on a bad network). It must never run on the crash path, where
-    // it would stall the handler before the report is persisted — so resolve
-    // it once here, off the main thread. sendPendingCrashReports runs in the
-    // same block, AFTER the hostname is cached: replayed signal-crash
-    // payloads are built there, and building them first would ship an empty
-    // server.hostname for exactly the reports the field exists for.
+    // Pending crash reports are converted and sent off the configure thread:
+    // this involves file I/O and a network request, neither of which should
+    // run on the caller's thread.
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
-        hb.cachedHostname = [[NSProcessInfo processInfo] hostName] ?: @"";
         [hb sendPendingCrashReports];
     });
 }
@@ -490,7 +484,6 @@ HB_PRIVATE volatile int hb_context_json_length = 0;
         _apiKey = @"";
         _initialized = FALSE;
         _context = [NSMutableDictionary dictionary];
-        _cachedHostname = @"";
     }
 
     return self;
@@ -1003,7 +996,6 @@ HB_PRIVATE void hb_signal_handler(int signal, siginfo_t* info, void* uap)
         },
         @"server" : @{
             @"environment_name" : [self environment],
-            @"hostname" : (self.cachedHostname ?: @""),
             @"pid" : @(0)  // the crashed process's pid is gone; 0 = unknown
         },
         @"binary_images" : binaryImages
@@ -1182,7 +1174,6 @@ HB_PRIVATE void hb_signal_handler(int signal, siginfo_t* info, void* uap)
         },
         @"server" : @{
             @"environment_name" : [self environment],
-            @"hostname" : (self.cachedHostname ?: @""),
             @"pid" : @([[NSProcessInfo processInfo] processIdentifier])
         }
     }];

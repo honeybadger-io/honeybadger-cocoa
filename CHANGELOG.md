@@ -10,10 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Breaking
 - `resetContext:(NSDictionary*)` changed to `resetContext` (no arguments). Clears context to an empty dictionary. Use `resetContext` + `setContext:` to replace context with a new dictionary. (This API change is why this release is 2.0.0.)
 - Minimum deployment targets raised to iOS 16.0 and macOS 13.0 (visionOS 1.0 unchanged).
+- `server.hostname` is no longer collected or sent. `NSProcessInfo.hostName` performed a reverse-DNS lookup that triggers the macOS 15+ local-network permission prompt and could block for seconds; a device hostname is also personally identifying and of little value for app crash reporting. Apps that want a host identifier can add one via `setContext:`.
 
 ### Added
 - Binary image capture: crash reports include a `binary_images` array with UUID, load address, ASLR slide, and architecture for each loaded Mach-O image, enabling server-side dSYM symbolication.
-- Server metadata: payloads include `server.hostname` and `server.pid`.
+- Server metadata: payloads include `server.pid`.
 - dSYM upload script (`bin/upload-dsyms.sh`) for uploading dSYM bundles to Honeybadger. Runs as an Xcode build phase or a manual/CI step. Vendored with the CocoaPods install via `preserve_paths`.
 - Configurable `revision` for release tracking: `configure(apiKey:environment:revision:)` reports the value as `server.revision`, and `bin/upload-dsyms.sh` accepts a matching `--revision` option. dSYM-to-crash matching remains UUID-based, so revision is optional.
 
@@ -23,12 +24,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Signal crash reports now persist the crashed process's binary images (load addresses, ASLR slides, UUIDs) at crash time. Previously the image list was rebuilt on the next launch, whose ASLR slides differ — so every signal crash symbolicated against the wrong address space.
 - Signal handlers run on a dedicated alternate stack (`SA_ONSTACK`); an introspection hook extends the alternate stack to every thread created after `configure`, so stack-overflow crashes — previously uncapturable — are recorded on the configure thread and all later-created threads. (Threads already running at `configure` time cannot be given an alternate stack.)
 - The signal-handler entry latch re-arms if the process survives a handled fatal signal, so a co-installed reporter or `SIG_IGN`'d predecessor can no longer permanently disable crash capture.
-- `server.hostname` is populated on replayed signal-crash reports (pending reports are now sent after the cached hostname resolves).
 - Crash addresses are attributed to a binary image only when they fall inside its recorded `[load_address, load_address + size)` range, and the image table holds 1024 entries (was 512) — addresses in dropped or unmapped ranges are reported unattributed instead of blamed on the nearest image. Signal crash-file format is now v4; stale v3 files are discarded on next launch.
 - The shipped SDK no longer exports internal `hb_*` symbols that could collide with a host app's own (`static` restored; tests compile the implementation directly).
 - Converted signal reports get unique filenames; a fixed name could clobber a still-unsent earlier report and lose it.
 - The exception-captured latch resets if the process survives a capture (e.g. macOS `reportException:` with `NSApplicationCrashOnExceptions` disabled); previously one survived exception silently disabled signal reporting for the process lifetime.
-- Hostname is resolved once at configure time on a background queue. `-[NSProcessInfo hostName]` can block on reverse DNS for seconds and previously ran inside the crash handler before the report was persisted.
 - The signal handler's own frames (handler + trampoline) are skipped from crash backtraces, so reports group by the faulting frame.
 - `bin/upload-dsyms.sh` no longer aborts the whole run (or the enclosing Xcode build) on a transient network error, and exits nonzero when any upload fails so CI can detect it. New `--warn-only` flag preserves exit-0 behavior for build phases. Missing `curl`/`zip`/`python3` fail fast with a clear error.
 - Unparseable or stale-format pending crash files are deleted instead of being reprocessed on every launch.
