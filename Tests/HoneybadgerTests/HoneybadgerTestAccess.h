@@ -12,6 +12,9 @@ void hb_chain_previous_signal(int signal, siginfo_t* info, void* uap);
 extern char hb_context_json[];
 extern volatile int hb_context_json_length;
 
+extern volatile sig_atomic_t hb_handler_entered;
+void hb_signal_handler(int signal, siginfo_t* info, void* uap);
+
 // White-box access to SDK internals for tests. ObjC has no real privacy:
 // these declarations let tests message the private methods on the shared
 // singleton without changing the shipped header.

@@ -83,4 +83,34 @@ void run_signal_chain_tests(void)
     // Restore everything.
     hb_previous_signal_actions[idx] = savedPrev;
     sigaction(SIGSEGV, &savedDisposition, NULL);
+
+    HB_TEST_BEGIN("testLatchRearmsWhenProcessSurvivesSignal");
+    // A SIG_IGN'd predecessor means hb_chain_previous_signal returns and the
+    // process survives delivery. The one-shot entry latch must re-arm, or
+    // every later real crash is chained past capture for the process's life.
+    int latchIdx = -1;
+    for ( int i = 0; i < 6; i++ ) {  // 6 == HB_SIGNAL_COUNT
+        if ( hb_signals[i] == SIGSEGV ) latchIdx = i;
+    }
+    HB_ASSERT_TRUE(latchIdx >= 0);
+    struct sigaction savedLatchPrev = hb_previous_signal_actions[latchIdx];
+    struct sigaction ignoreAction;
+    memset(&ignoreAction, 0, sizeof(ignoreAction));
+    ignoreAction.sa_handler = SIG_IGN;
+    hb_previous_signal_actions[latchIdx] = ignoreAction;
+
+    hb_exception_captured = 0;
+    hb_handler_entered = 0;
+    siginfo_t latchInfo;
+    memset(&latchInfo, 0, sizeof(latchInfo));
+    hb_signal_handler(SIGSEGV, &latchInfo, NULL);  // capture path, then chain returns
+    HB_ASSERT_EQ_INT((int)hb_handler_entered, 0);
+
+    // The exception-captured early-out must also re-arm on survival.
+    hb_exception_captured = 1;
+    hb_signal_handler(SIGSEGV, &latchInfo, NULL);
+    HB_ASSERT_EQ_INT((int)hb_handler_entered, 0);
+    hb_exception_captured = 0;
+
+    hb_previous_signal_actions[latchIdx] = savedLatchPrev;
 }

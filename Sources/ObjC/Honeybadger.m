@@ -683,6 +683,12 @@ HB_PRIVATE void hb_signal_handler(int signal, siginfo_t* info, void* uap)
     // process still terminates.
     if ( hb_exception_captured ) {
         hb_chain_previous_signal(signal, info, uap);
+        // The chain returned, so the process survived this delivery (e.g. a
+        // SIG_IGN'd or non-terminating predecessor). Re-arm the one-shot
+        // latch — its owner is the only path that reaches this store — so a
+        // later real crash is still captured. Mirrors hb_exception_captured's
+        // own reset (see hb_capture_exception); a fatal chain never returns.
+        hb_handler_entered = 0;
         return;
     }
 
@@ -746,6 +752,10 @@ HB_PRIVATE void hb_signal_handler(int signal, siginfo_t* info, void* uap)
     // removed from the delivery path first, so a predecessor that returns
     // without terminating can't loop back through us and re-fault.
     hb_chain_previous_signal(signal, info, uap);
+
+    // See the exception-captured branch above: a returning chain means the
+    // process survived, so re-arm the one-shot latch for the next crash.
+    hb_handler_entered = 0;
 }
 
 - (NSString*) signalName:(int)sig
