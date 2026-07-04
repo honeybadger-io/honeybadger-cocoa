@@ -31,8 +31,12 @@ let package = Package(
         ),
         .executableTarget(
             name: "HoneybadgerTests",
-            dependencies: ["Honeybadger"],
-            path: "Tests/HoneybadgerTests"
+            path: "Tests/HoneybadgerTests",
+            cSettings: [
+                .define("HB_TEST_BUILD", to: "1"),
+                .headerSearchPath("../../Sources/ObjC/include"),
+                .headerSearchPath("../../Sources/ObjC")
+            ]
         ),
         .executableTarget(
             name: "HoneybadgerProductionSmoke",

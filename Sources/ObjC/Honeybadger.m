@@ -18,6 +18,18 @@
 #include <math.h>
 #import "HoneybadgerCrashTypes.h"
 
+// Linkage for SDK-internal globals and functions. Shipped builds keep them
+// `static` so a statically linked SDK exports no hb_* symbols that could
+// collide with a host app's own. Test builds (HB_TEST_BUILD, defined by the
+// HoneybadgerTests target, which compiles this file directly — see
+// Tests/HoneybadgerTests/SDKUnderTest.m) give them external linkage for
+// white-box access.
+#ifdef HB_TEST_BUILD
+    #define HB_PRIVATE
+#else
+    #define HB_PRIVATE static
+#endif
+
 #if (TARGET_OS_IOS || TARGET_OS_VISION)
     #import <UIKit/UIKit.h>
 #endif
@@ -42,8 +54,8 @@ static NSString * const shortPlatformName = @"unknown";
 // -- SIGNAL HANDLING STATICS ----------------------------------------------
 
 #define HB_SIGNAL_COUNT 6
-int hb_signals[HB_SIGNAL_COUNT] = { SIGABRT, SIGSEGV, SIGBUS, SIGFPE, SIGILL, SIGTRAP };
-struct sigaction hb_previous_signal_actions[HB_SIGNAL_COUNT];
+HB_PRIVATE int hb_signals[HB_SIGNAL_COUNT] = { SIGABRT, SIGSEGV, SIGBUS, SIGFPE, SIGILL, SIGTRAP };
+HB_PRIVATE struct sigaction hb_previous_signal_actions[HB_SIGNAL_COUNT];
 static char hb_signal_crash_file_path[PATH_MAX];
 
 // Dedicated stack for fatal-signal delivery. A stack-overflow SIGSEGV arrives
@@ -57,15 +69,15 @@ static NSUncaughtExceptionHandler *hb_previous_exception_handler = NULL;
 // The signal handler reads it (async-signal-safe via sig_atomic_t) to avoid
 // writing a duplicate report for the signal that merely tears the process down
 // afterward — AppKit's crash-on-exceptions trap (SIGTRAP) or abort() (SIGABRT).
-volatile sig_atomic_t hb_exception_captured = 0;
+HB_PRIVATE volatile sig_atomic_t hb_exception_captured = 0;
 
 #if TARGET_OS_OSX
 static IMP hb_original_report_exception = NULL;
 #endif
 
-void hb_exception_handler(NSException *exception);
-void hb_signal_handler(int signal, siginfo_t* info, void* uap);
-void hb_capture_exception(NSException *exception, NSString *handlerName);
+HB_PRIVATE void hb_exception_handler(NSException *exception);
+HB_PRIVATE void hb_signal_handler(int signal, siginfo_t* info, void* uap);
+HB_PRIVATE void hb_capture_exception(NSException *exception, NSString *handlerName);
 #if TARGET_OS_OSX
 static void hb_install_appkit_exception_hook(void);
 #endif
@@ -75,10 +87,10 @@ static void hb_install_appkit_exception_hook(void);
 // loads an image — so the crash-time signal handler can persist symbolication
 // data from the *crashed* process with nothing but write(). Rebuilding on the
 // next launch instead would pair crash addresses with the wrong ASLR slides.
-HBBinaryImage hb_binary_images[HB_MAX_BINARY_IMAGES];
-volatile int hb_binary_image_count = 0;
+HB_PRIVATE HBBinaryImage hb_binary_images[HB_MAX_BINARY_IMAGES];
+HB_PRIVATE volatile int hb_binary_image_count = 0;
 
-void hb_refresh_binary_images(void)
+HB_PRIVATE void hb_refresh_binary_images(void)
 {
     uint32_t dyldCount = _dyld_image_count();
     int out = 0;
@@ -139,8 +151,8 @@ static void hb_on_dyld_image_added(const struct mach_header* header, intptr_t sl
 // exists to capture. Same accepted torn-read race as hb_binary_images: length
 // is invalidated during the copy, and the reader degrades an unparseable
 // snapshot to an empty context rather than dropping the report.
-char hb_context_json[HB_MAX_CONTEXT_JSON];
-volatile int hb_context_json_length = 0;
+HB_PRIVATE char hb_context_json[HB_MAX_CONTEXT_JSON];
+HB_PRIVATE volatile int hb_context_json_length = 0;
 
 // -------------------------------------------------------------------------
 
@@ -481,7 +493,7 @@ volatile int hb_context_json_length = 0;
 // Builds a Honeybadger notice from an NSException and persists it to disk.
 // Shared by the uncaught-exception handler and, on macOS, the AppKit
 // -[NSApplication reportException:] hook.
-void hb_capture_exception(NSException *exception, NSString *handlerName)
+HB_PRIVATE void hb_capture_exception(NSException *exception, NSString *handlerName)
 {
     if ( !exception ) {
         return;
@@ -515,7 +527,7 @@ void hb_capture_exception(NSException *exception, NSString *handlerName)
     });
 }
 
-void hb_exception_handler(NSException *exception)
+HB_PRIVATE void hb_exception_handler(NSException *exception)
 {
     if ( !exception ) {
         if ( hb_previous_exception_handler ) {
@@ -624,7 +636,7 @@ static void hb_install_appkit_exception_hook(void)
 // own disposition is replaced first, so a predecessor that returns without
 // terminating re-faults into the predecessor, not back through us.
 // Async-signal-safe: sigaction(), raise(), and direct calls only.
-void hb_chain_previous_signal(int signal, siginfo_t* info, void* uap)
+HB_PRIVATE void hb_chain_previous_signal(int signal, siginfo_t* info, void* uap)
 {
     for ( int i = 0; i < HB_SIGNAL_COUNT; i++ ) {
         if ( hb_signals[i] != signal ) {
@@ -655,9 +667,9 @@ void hb_chain_previous_signal(int signal, siginfo_t* info, void* uap)
 // fault inside the handler itself — must not re-enter the capture path; it
 // chains straight to the predecessor instead. __sync_lock_test_and_set is
 // lock-free and async-signal-safe on all supported targets.
-static volatile sig_atomic_t hb_handler_entered = 0;
+HB_PRIVATE volatile sig_atomic_t hb_handler_entered = 0;
 
-void hb_signal_handler(int signal, siginfo_t* info, void* uap)
+HB_PRIVATE void hb_signal_handler(int signal, siginfo_t* info, void* uap)
 {
     if ( __sync_lock_test_and_set((sig_atomic_t*)&hb_handler_entered, 1) ) {
         hb_chain_previous_signal(signal, info, uap);
