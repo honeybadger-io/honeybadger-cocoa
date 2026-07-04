@@ -225,20 +225,23 @@ HB_PRIVATE volatile int hb_context_json_length = 0;
     hb.customEnvironment = [hb safeTrimmedStr:environment];
     hb.customRevision = [hb safeTrimmedStr:revision];
 
-    // -[NSProcessInfo hostName] can perform a blocking reverse-DNS lookup
-    // (seconds on a bad network). It must never run on the crash path, where
-    // it would stall the handler before the report is persisted — so resolve
-    // it once here, off the main thread, and read the cached value everywhere.
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
-        hb.cachedHostname = [[NSProcessInfo processInfo] hostName] ?: @"";
-    });
-
     [hb setupCrashReportDirectory];
     [hb refreshContextSnapshot];
     [hb setExceptionHandler];
     [hb installSignalHandlers];
     hb.initialized = TRUE;
-    [hb sendPendingCrashReports];
+
+    // -[NSProcessInfo hostName] can perform a blocking reverse-DNS lookup
+    // (seconds on a bad network). It must never run on the crash path, where
+    // it would stall the handler before the report is persisted — so resolve
+    // it once here, off the main thread. sendPendingCrashReports runs in the
+    // same block, AFTER the hostname is cached: replayed signal-crash
+    // payloads are built there, and building them first would ship an empty
+    // server.hostname for exactly the reports the field exists for.
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        hb.cachedHostname = [[NSProcessInfo processInfo] hostName] ?: @"";
+        [hb sendPendingCrashReports];
+    });
 }
 
 
