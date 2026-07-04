@@ -12,6 +12,7 @@
 #include <mach-o/loader.h>
 #include <dlfcn.h>
 #include <signal.h>
+#include <pthread.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <limits.h>
@@ -652,6 +653,18 @@ HB_PRIVATE void hb_chain_previous_signal(int signal, siginfo_t* info, void* uap)
                 previous.sa_sigaction(signal, info, uap);
             }
         } else if ( previous.sa_handler == SIG_DFL ) {
+            // raise() alone would only mark the signal pending: sa_mask has
+            // it blocked for the duration of our handler, so the default
+            // (terminating) action would run only after we return — leaving
+            // a window where the re-armed entry latch could let a concurrent
+            // crash truncate the just-written crash file. Unblock it first so
+            // the re-raise delivers immediately and never returns.
+            // pthread_sigmask is async-signal-safe (POSIX); sigemptyset/
+            // sigaddset are plain bitmask operations on Darwin.
+            sigset_t unblock;
+            sigemptyset(&unblock);
+            sigaddset(&unblock, signal);
+            pthread_sigmask(SIG_UNBLOCK, &unblock, NULL);
             raise(signal);
         } else if ( previous.sa_handler != SIG_IGN && previous.sa_handler ) {
             previous.sa_handler(signal);

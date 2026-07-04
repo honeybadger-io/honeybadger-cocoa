@@ -94,6 +94,11 @@ void run_signal_chain_tests(void)
     }
     HB_ASSERT_TRUE(latchIdx >= 0);
     struct sigaction savedLatchPrev = hb_previous_signal_actions[latchIdx];
+    // hb_chain_previous_signal installs the fake predecessor as SIGSEGV's live
+    // disposition before invoking it; snapshot the real one so we can restore
+    // it once this block is done chaining (twice) through the fake.
+    struct sigaction savedLatchDisposition;
+    sigaction(SIGSEGV, NULL, &savedLatchDisposition);
     struct sigaction ignoreAction;
     memset(&ignoreAction, 0, sizeof(ignoreAction));
     ignoreAction.sa_handler = SIG_IGN;
@@ -113,4 +118,5 @@ void run_signal_chain_tests(void)
     hb_exception_captured = 0;
 
     hb_previous_signal_actions[latchIdx] = savedLatchPrev;
+    sigaction(SIGSEGV, &savedLatchDisposition, NULL);
 }
