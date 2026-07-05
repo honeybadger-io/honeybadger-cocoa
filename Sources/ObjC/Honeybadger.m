@@ -73,16 +73,42 @@ static char hb_signal_stack[64 * 1024];
 // born afterward. THREAD_START runs on the new thread itself in normal
 // context (malloc is fine here — this is NOT the signal handler). The
 // malloc'd stack is virtual until a signal actually touches it. Ownership is
-// tracked in thread-specific data so TERMINATE frees only stacks WE
-// installed — never the host app's or another SDK's — and a pre-existing
-// alt stack is left alone. Threads alive before configure (other than the
-// configure thread) remain uncovered.
-static pthread_key_t hb_thread_alt_stack_key;
+// tracked in thread-specific data so cleanup frees only stacks WE installed —
+// never the host app's or another SDK's — and a pre-existing alt stack is
+// left alone. Threads alive before configure (other than the configure
+// thread) remain uncovered.
+//
+// Cleanup lives in the TSD destructor, NOT the THREAD_TERMINATE event: by
+// the time TERMINATE fires, libpthread has already run TSD cleanup, so
+// pthread_getspecific returns NULL there. The destructor runs on the exiting
+// thread while sigaltstack still targets it.
+HB_PRIVATE pthread_key_t hb_thread_alt_stack_key;
 static pthread_introspection_hook_t hb_previous_introspection_hook;
+HB_PRIVATE pid_t hb_hook_install_pid;
 
-static void hb_thread_introspection_hook(unsigned int event, pthread_t thread, void* addr, size_t size)
+HB_PRIVATE void hb_thread_alt_stack_destructor(void* stackMem)
 {
-    if ( event == PTHREAD_INTROSPECTION_THREAD_START ) {
+    // Darwin rejects SS_DISABLE with a zero ss_size (ENOMEM), so pass
+    // MINSIGSTKSZ. Free only once the kernel has let go of the stack; on
+    // failure, leaking beats a signal delivered onto freed memory.
+    stack_t disable;
+    memset(&disable, 0, sizeof(disable));
+    disable.ss_flags = SS_DISABLE;
+    disable.ss_size = MINSIGSTKSZ;
+    if ( sigaltstack(&disable, NULL) == 0 ) {
+        free(stackMem);
+    }
+}
+
+HB_PRIVATE void hb_thread_introspection_hook(unsigned int event, pthread_t thread, void* addr, size_t size)
+{
+    // The pid check guards against forked children: libsystem's atfork-child
+    // path (_pthread_main_thread_postfork_init) re-fires THREAD_START in the
+    // child between fork() and exec, where only async-signal-safe calls are
+    // legal — malloc there aborts if another parent thread held an allocator
+    // lock at the fork instant. getpid() is async-signal-safe; in a child it
+    // no longer matches, so touch nothing and only chain.
+    if ( event == PTHREAD_INTROSPECTION_THREAD_START && getpid() == hb_hook_install_pid ) {
         stack_t existing;
         if ( sigaltstack(NULL, &existing) == 0 && (existing.ss_flags & SS_DISABLE) ) {
             void* stackMem = malloc(sizeof(hb_signal_stack));
@@ -97,17 +123,6 @@ static void hb_thread_introspection_hook(unsigned int event, pthread_t thread, v
                     free(stackMem);
                 }
             }
-        }
-    } else if ( event == PTHREAD_INTROSPECTION_THREAD_TERMINATE ) {
-        // Runs on the terminating thread, before TSD teardown.
-        void* stackMem = pthread_getspecific(hb_thread_alt_stack_key);
-        if ( stackMem ) {
-            stack_t disable;
-            memset(&disable, 0, sizeof(disable));
-            disable.ss_flags = SS_DISABLE;
-            sigaltstack(&disable, NULL);
-            free(stackMem);
-            pthread_setspecific(hb_thread_alt_stack_key, NULL);
         }
     }
     if ( hb_previous_introspection_hook ) {
@@ -674,7 +689,8 @@ static void hb_install_appkit_exception_hook(void)
 
     static dispatch_once_t introspectionOnce;
     dispatch_once(&introspectionOnce, ^{
-        if ( pthread_key_create(&hb_thread_alt_stack_key, NULL) == 0 ) {
+        if ( pthread_key_create(&hb_thread_alt_stack_key, hb_thread_alt_stack_destructor) == 0 ) {
+            hb_hook_install_pid = getpid();
             hb_previous_introspection_hook =
                 pthread_introspection_hook_install(hb_thread_introspection_hook);
         }
