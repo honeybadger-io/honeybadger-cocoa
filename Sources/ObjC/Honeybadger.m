@@ -1262,7 +1262,10 @@ HB_PRIVATE void hb_signal_handler(int signal, siginfo_t* info, void* uap)
 
 - (void) sendPayloadData:(NSData*)dataToSend filePath:(NSString*)filePath
 {
-    NSString* url = @"https://api.honeybadger.io/v1/notices";
+    // Local/dev override: HONEYBADGER_ENDPOINT=http://localhost:8011 points the
+    // SDK at a local collector (e2e testing). Production default is unchanged.
+    NSString* base = [[[NSProcessInfo processInfo] environment] objectForKey:@"HONEYBADGER_ENDPOINT"] ?: @"https://api.honeybadger.io";
+    NSString* url = [base stringByAppendingString:@"/v1/notices"];
 
     NSMutableURLRequest* request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:url]];
     [request setHTTPMethod:@"POST"];

@@ -23,7 +23,9 @@ set -uo pipefail
 API_KEY=""
 DSYM_PATH=""
 REVISION=""
-API_BASE="https://api.honeybadger.io"
+# HONEYBADGER_API_BASE overrides the API host for local/e2e testing
+# (e.g. a locally-running collector). Production default is unchanged.
+API_BASE="${HONEYBADGER_API_BASE:-https://api.honeybadger.io}"
 WARN_ONLY=0
 
 usage() {
