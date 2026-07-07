@@ -22,6 +22,19 @@ NS_SWIFT_NAME(configure(apiKey:environment:));
 + (void) configureWithAPIKey:(NSString*)apiKey environment:(NSString*)environment revision:(NSString*)revision
 NS_SWIFT_NAME(configure(apiKey:environment:revision:));
 
+// The endpoint is the base URL of the Honeybadger API (scheme + host, with
+// an optional path prefix for proxies). EU stack:
+//   [Honeybadger configureWithAPIKey:@"..." endpoint:@"https://eu-api.honeybadger.io"];
+// Empty string means the default, https://api.honeybadger.io.
++ (void) configureWithAPIKey:(NSString*)apiKey endpoint:(NSString*)endpoint
+NS_SWIFT_NAME(configure(apiKey:endpoint:));
+
++ (void) configureWithAPIKey:(NSString*)apiKey environment:(NSString*)environment endpoint:(NSString*)endpoint
+NS_SWIFT_NAME(configure(apiKey:environment:endpoint:));
+
++ (void) configureWithAPIKey:(NSString*)apiKey environment:(NSString*)environment revision:(NSString*)revision endpoint:(NSString*)endpoint
+NS_SWIFT_NAME(configure(apiKey:environment:revision:endpoint:));
+
 // NOTIFY ------------------------------------------------------------------
 
 + (void) notifyWithString:(NSString*)errorString

@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Server metadata: payloads include `server.pid`.
 - dSYM upload script (`bin/upload-dsyms.sh`) for uploading dSYM bundles to Honeybadger. Runs as an Xcode build phase or a manual/CI step. Vendored with the CocoaPods install via `preserve_paths`.
 - Configurable `revision` for release tracking: `configure(apiKey:environment:revision:)` reports the value as `server.revision`, and `bin/upload-dsyms.sh` accepts a matching `--revision` option. dSYM-to-crash matching remains UUID-based, so revision is optional.
+- Configurable API endpoint for EU-stack accounts and proxies: `configure(apiKey:endpoint:)`, `configure(apiKey:environment:endpoint:)`, and `configure(apiKey:environment:revision:endpoint:)`, plus an `--endpoint` option on `bin/upload-dsyms.sh`.
 
 ### Fixed
 - Replaced deprecated `NXArchInfo` APIs with `<mach-o/utils.h>` equivalents; the SDK now compiles warning-free (including under `-Werror`).

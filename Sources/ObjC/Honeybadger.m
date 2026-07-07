@@ -244,6 +244,7 @@ HB_PRIVATE volatile int hb_context_json_length = 0;
 @property (nonatomic) NSString* apiKey;
 @property (nonatomic) NSString* customEnvironment;
 @property (nonatomic) NSString* customRevision;
+@property (nonatomic) NSString* endpoint;
 @property (nonatomic) BOOL initialized;
 @property (nonatomic) NSMutableDictionary<NSString*, NSString*>* context;
 
@@ -271,14 +272,26 @@ HB_PRIVATE volatile int hb_context_json_length = 0;
 // CONFIG ------------------------------------------------------------------
 
 + (void) configureWithAPIKey:(NSString*)apiKey {
-    [Honeybadger configureWithAPIKey:apiKey environment:@"" revision:@""];
+    [Honeybadger configureWithAPIKey:apiKey environment:@"" revision:@"" endpoint:@""];
 }
 
 + (void) configureWithAPIKey:(NSString*)apiKey environment:(NSString*)environment {
-    [Honeybadger configureWithAPIKey:apiKey environment:environment revision:@""];
+    [Honeybadger configureWithAPIKey:apiKey environment:environment revision:@"" endpoint:@""];
 }
 
 + (void) configureWithAPIKey:(NSString*)apiKey environment:(NSString*)environment revision:(NSString*)revision {
+    [Honeybadger configureWithAPIKey:apiKey environment:environment revision:revision endpoint:@""];
+}
+
++ (void) configureWithAPIKey:(NSString*)apiKey endpoint:(NSString*)endpoint {
+    [Honeybadger configureWithAPIKey:apiKey environment:@"" revision:@"" endpoint:endpoint];
+}
+
++ (void) configureWithAPIKey:(NSString*)apiKey environment:(NSString*)environment endpoint:(NSString*)endpoint {
+    [Honeybadger configureWithAPIKey:apiKey environment:environment revision:@"" endpoint:endpoint];
+}
+
++ (void) configureWithAPIKey:(NSString*)apiKey environment:(NSString*)environment revision:(NSString*)revision endpoint:(NSString*)endpoint {
     Honeybadger* hb = [Honeybadger sharedInstance];
 
     // Ignore repeat calls. Re-running configuration would re-install the
@@ -303,6 +316,7 @@ HB_PRIVATE volatile int hb_context_json_length = 0;
     hb.apiKey = [hb safeTrimmedStr:apiKey];
     hb.customEnvironment = [hb safeTrimmedStr:environment];
     hb.customRevision = [hb safeTrimmedStr:revision];
+    hb.endpoint = [hb normalizedEndpointBase:endpoint];
 
     [hb setupCrashReportDirectory];
     [hb refreshContextSnapshot];
@@ -1241,6 +1255,46 @@ HB_PRIVATE void hb_signal_handler(int signal, siginfo_t* info, void* uap)
     [data writeToFile:path atomically:YES];
 }
 
+// Normalizes a user-supplied endpoint base URL. Returns @"" for empty input
+// (meaning "use the default") and for invalid input (after logging a
+// warning). A typo must not silently disable crash reporting — the caller
+// falls back to the production default.
+- (NSString*) normalizedEndpointBase:(NSString*)endpoint
+{
+    NSString* trimmed = [self safeTrimmedStr:endpoint];
+    while ( [trimmed hasSuffix:@"/"] ) {
+        trimmed = [trimmed substringToIndex:trimmed.length - 1];
+    }
+    if ( trimmed.length == 0 ) {
+        return @"";
+    }
+    NSURLComponents* components = [NSURLComponents componentsWithString:trimmed];
+    BOOL schemeOK = [components.scheme.lowercaseString isEqualToString:@"http"] ||
+                    [components.scheme.lowercaseString isEqualToString:@"https"];
+    if ( !components || !schemeOK || components.host.length == 0 ||
+         components.query != nil || components.fragment != nil ) {
+        NSLog(@"Honeybadger: invalid endpoint \"%@\", ignoring", endpoint);
+        return @"";
+    }
+    return trimmed;
+}
+
+// Resolves the notices URL. Precedence: env override (dev/e2e), then the
+// configured endpoint, then the production default. Both inputs are
+// normalized here, so a blank or invalid HONEYBADGER_ENDPOINT cannot mask a
+// valid configured endpoint.
+- (NSString*) noticesURLWithEnvOverride:(NSString*)envOverride configuredEndpoint:(NSString*)configuredEndpoint
+{
+    NSString* base = [self normalizedEndpointBase:envOverride];
+    if ( base.length == 0 ) {
+        base = [self normalizedEndpointBase:configuredEndpoint];
+    }
+    if ( base.length == 0 ) {
+        base = @"https://api.honeybadger.io";
+    }
+    return [base stringByAppendingString:@"/v1/notices"];
+}
+
 - (void) sendToHoneybadger:(NSDictionary*)payload
 {
     if ( !payload || ![self isValidAPIKey:_apiKey] ) {
@@ -1263,9 +1317,10 @@ HB_PRIVATE void hb_signal_handler(int signal, siginfo_t* info, void* uap)
 - (void) sendPayloadData:(NSData*)dataToSend filePath:(NSString*)filePath
 {
     // Local/dev override: HONEYBADGER_ENDPOINT=http://localhost:8011 points the
-    // SDK at a local collector (e2e testing). Production default is unchanged.
-    NSString* base = [[[NSProcessInfo processInfo] environment] objectForKey:@"HONEYBADGER_ENDPOINT"] ?: @"https://api.honeybadger.io";
-    NSString* url = [base stringByAppendingString:@"/v1/notices"];
+    // SDK at a local collector (e2e testing). Otherwise the configured
+    // endpoint (EU stack, proxy), otherwise the production default.
+    NSString* envOverride = [[[NSProcessInfo processInfo] environment] objectForKey:@"HONEYBADGER_ENDPOINT"] ?: @"";
+    NSString* url = [self noticesURLWithEnvOverride:envOverride configuredEndpoint:_endpoint ?: @""];
 
     NSMutableURLRequest* request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:url]];
     [request setHTTPMethod:@"POST"];

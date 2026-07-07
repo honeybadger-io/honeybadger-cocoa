@@ -104,6 +104,33 @@ Honeybadger.configure(
 ];
 ```
 
+## Using the EU Stack
+
+If your Honeybadger account is on the EU stack, pass the EU endpoint when
+configuring the SDK:
+
+#### Swift
+
+```swift
+Honeybadger.configure(apiKey: "YOUR_API_KEY", endpoint: "https://eu-api.honeybadger.io")
+```
+
+#### Objective-C
+
+```objc
+[Honeybadger configureWithAPIKey:@"YOUR_API_KEY" endpoint:@"https://eu-api.honeybadger.io"];
+```
+
+The endpoint is the base URL of the Honeybadger API (scheme + host, with an
+optional path prefix if you route through a proxy). When omitted, the SDK
+reports to https://api.honeybadger.io.
+
+[dSYM uploads](#dsym-upload-for-symbolication) are configured separately, in the build phase that runs the
+upload script:
+
+```shell
+"${PODS_ROOT}/Honeybadger/bin/upload-dsyms.sh" --api-key "YOUR_API_KEY" --endpoint "https://eu-api.honeybadger.io"
+```
 
 ## Usage Examples
 Errors and exceptions will be automatically handled by the Honeybadger library, but you can also use the following API to customize error handling in your application.

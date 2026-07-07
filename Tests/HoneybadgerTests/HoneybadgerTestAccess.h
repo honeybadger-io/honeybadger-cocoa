@@ -35,4 +35,6 @@ void hb_signal_handler(int signal, siginfo_t* info, void* uap);
 - (void) installSignalHandlers;
 - (void) refreshContextSnapshot;
 - (NSMutableDictionary*) context;
+- (NSString*) normalizedEndpointBase:(NSString*)endpoint;
+- (NSString*) noticesURLWithEnvOverride:(NSString*)envOverride configuredEndpoint:(NSString*)configuredEndpoint;
 @end

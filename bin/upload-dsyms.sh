@@ -6,7 +6,7 @@
 # Can be used as an Xcode build phase or CI step.
 #
 # Usage:
-#   ./bin/upload-dsyms.sh --api-key <key> [--dsym-path <path>] [--revision <revision>]
+#   ./bin/upload-dsyms.sh --api-key <key> [--dsym-path <path>] [--revision <revision>] [--endpoint <url>]
 #
 # If --dsym-path is not provided, falls back to Xcode's DWARF_DSYM_FOLDER_PATH.
 #
@@ -23,13 +23,14 @@ set -uo pipefail
 API_KEY=""
 DSYM_PATH=""
 REVISION=""
-# HONEYBADGER_API_BASE overrides the API host for local/e2e testing
-# (e.g. a locally-running collector). Production default is unchanged.
-API_BASE="${HONEYBADGER_API_BASE:-https://api.honeybadger.io}"
+ENDPOINT=""
+# Endpoint precedence: --endpoint flag, then HONEYBADGER_API_BASE (kept for
+# CI/e2e compatibility), then the production default. Resolved after the
+# option loop below.
 WARN_ONLY=0
 
 usage() {
-    echo "Usage: $0 --api-key <key> [--dsym-path <path>] [--revision <revision>]"
+    echo "Usage: $0 --api-key <key> [--dsym-path <path>] [--revision <revision>] [--endpoint <url>] [--warn-only]"
     echo ""
     echo "Options:"
     echo "  --api-key    Honeybadger API key (required)"
@@ -37,6 +38,9 @@ usage() {
     echo "               (defaults to Xcode's DWARF_DSYM_FOLDER_PATH)"
     echo "  --revision   Optional revision/release identifier. Must match the"
     echo "               revision configured in the SDK."
+    echo "  --endpoint   Base URL of the Honeybadger API. Use"
+    echo "               https://eu-api.honeybadger.io for the EU stack."
+    echo "               (defaults to \$HONEYBADGER_API_BASE or https://api.honeybadger.io)"
     echo "  --warn-only  Always exit 0, even if uploads fail (for build phases"
     echo "               that should not fail the build)"
     exit 1
@@ -56,6 +60,10 @@ while [[ $# -gt 0 ]]; do
             REVISION="$2"
             shift 2
             ;;
+        --endpoint)
+            ENDPOINT="$2"
+            shift 2
+            ;;
         --warn-only)
             WARN_ONLY=1
             shift 1
@@ -66,6 +74,9 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+API_BASE="${ENDPOINT:-${HONEYBADGER_API_BASE:-https://api.honeybadger.io}}"
+while [[ "$API_BASE" == */ ]]; do API_BASE="${API_BASE%/}"; done
 
 if [[ -z "$API_KEY" ]]; then
     echo "Error: --api-key is required"
