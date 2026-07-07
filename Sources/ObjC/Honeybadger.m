@@ -7,15 +7,30 @@
 #import "Honeybadger.h"
 #import <objc/runtime.h>
 #include <execinfo.h>
-#import <mach-o/arch.h>
+#include <mach-o/utils.h>
 #include <mach-o/dyld.h>
 #include <mach-o/loader.h>
 #include <dlfcn.h>
 #include <signal.h>
+#include <pthread.h>
+#include <pthread/introspection.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <limits.h>
 #include <math.h>
+#import "HoneybadgerCrashTypes.h"
+
+// Linkage for SDK-internal globals and functions. Shipped builds keep them
+// `static` so a statically linked SDK exports no hb_* symbols that could
+// collide with a host app's own. Test builds (HB_TEST_BUILD, defined by the
+// HoneybadgerTests target, which compiles this file directly — see
+// Tests/HoneybadgerTests/SDKUnderTest.m) give them external linkage for
+// white-box access.
+#ifdef HB_TEST_BUILD
+    #define HB_PRIVATE
+#else
+    #define HB_PRIVATE static
+#endif
 
 #if (TARGET_OS_IOS || TARGET_OS_VISION)
     #import <UIKit/UIKit.h>
@@ -23,7 +38,7 @@
 
 
 
-#define HONEYBADGER_APPLE_SDK_VERSION   @"1.2.0"
+#define HONEYBADGER_APPLE_SDK_VERSION   @"2.0.0"
 
 
 #if TARGET_OS_IOS
@@ -41,33 +56,184 @@ static NSString * const shortPlatformName = @"unknown";
 // -- SIGNAL HANDLING STATICS ----------------------------------------------
 
 #define HB_SIGNAL_COUNT 6
-static int hb_signals[HB_SIGNAL_COUNT] = { SIGABRT, SIGSEGV, SIGBUS, SIGFPE, SIGILL, SIGTRAP };
-static struct sigaction hb_previous_signal_actions[HB_SIGNAL_COUNT];
+HB_PRIVATE int hb_signals[HB_SIGNAL_COUNT] = { SIGABRT, SIGSEGV, SIGBUS, SIGFPE, SIGILL, SIGTRAP };
+HB_PRIVATE struct sigaction hb_previous_signal_actions[HB_SIGNAL_COUNT];
 static char hb_signal_crash_file_path[PATH_MAX];
+
+// Dedicated stack for fatal-signal delivery. A stack-overflow SIGSEGV arrives
+// on the exhausted thread stack; without this, the handler's own prologue
+// faults and the crash is never recorded. 64KB comfortably exceeds Darwin's
+// MINSIGSTKSZ (32KB) and the handler's needs (its large buffers are static).
+static char hb_signal_stack[64 * 1024];
+
+// Alternate stacks for threads created after configure. sigaltstack() is
+// per-thread and no API can install a stack on another already-running
+// thread, so installSignalHandlers covers only its own (configure) thread
+// with hb_signal_stack; this pthread introspection hook covers every thread
+// born afterward. THREAD_START runs on the new thread itself in normal
+// context (malloc is fine here — this is NOT the signal handler). The
+// malloc'd stack is virtual until a signal actually touches it. Ownership is
+// tracked in thread-specific data so cleanup frees only stacks WE installed —
+// never the host app's or another SDK's — and a pre-existing alt stack is
+// left alone. Threads alive before configure (other than the configure
+// thread) remain uncovered.
+//
+// Cleanup lives in the TSD destructor, NOT the THREAD_TERMINATE event: by
+// the time TERMINATE fires, libpthread has already run TSD cleanup, so
+// pthread_getspecific returns NULL there. The destructor runs on the exiting
+// thread while sigaltstack still targets it.
+HB_PRIVATE pthread_key_t hb_thread_alt_stack_key;
+static pthread_introspection_hook_t hb_previous_introspection_hook;
+HB_PRIVATE pid_t hb_hook_install_pid;
+
+HB_PRIVATE void hb_thread_alt_stack_destructor(void* stackMem)
+{
+    // Darwin rejects SS_DISABLE with a zero ss_size (ENOMEM), so pass
+    // MINSIGSTKSZ. Free only once the kernel has let go of the stack; on
+    // failure, leaking beats a signal delivered onto freed memory.
+    stack_t disable;
+    memset(&disable, 0, sizeof(disable));
+    disable.ss_flags = SS_DISABLE;
+    disable.ss_size = MINSIGSTKSZ;
+    if ( sigaltstack(&disable, NULL) == 0 ) {
+        free(stackMem);
+    }
+}
+
+HB_PRIVATE void hb_thread_introspection_hook(unsigned int event, pthread_t thread, void* addr, size_t size)
+{
+    // The pid check guards against forked children: libsystem's atfork-child
+    // path (_pthread_main_thread_postfork_init) re-fires THREAD_START in the
+    // child between fork() and exec, where only async-signal-safe calls are
+    // legal — malloc there aborts if another parent thread held an allocator
+    // lock at the fork instant. getpid() is async-signal-safe; in a child it
+    // no longer matches, so touch nothing and only chain.
+    if ( event == PTHREAD_INTROSPECTION_THREAD_START && getpid() == hb_hook_install_pid ) {
+        stack_t existing;
+        if ( sigaltstack(NULL, &existing) == 0 && (existing.ss_flags & SS_DISABLE) ) {
+            void* stackMem = malloc(sizeof(hb_signal_stack));
+            if ( stackMem ) {
+                stack_t altStack;
+                memset(&altStack, 0, sizeof(altStack));
+                altStack.ss_sp = stackMem;
+                altStack.ss_size = sizeof(hb_signal_stack);
+                if ( sigaltstack(&altStack, NULL) == 0 ) {
+                    pthread_setspecific(hb_thread_alt_stack_key, stackMem);
+                } else {
+                    free(stackMem);
+                }
+            }
+        }
+    }
+    if ( hb_previous_introspection_hook ) {
+        hb_previous_introspection_hook(event, thread, addr, size);
+    }
+}
+
 static NSUncaughtExceptionHandler *hb_previous_exception_handler = NULL;
 
 // Set once an NSException has been captured + persisted by the exception path.
 // The signal handler reads it (async-signal-safe via sig_atomic_t) to avoid
 // writing a duplicate report for the signal that merely tears the process down
 // afterward — AppKit's crash-on-exceptions trap (SIGTRAP) or abort() (SIGABRT).
-static volatile sig_atomic_t hb_exception_captured = 0;
+HB_PRIVATE volatile sig_atomic_t hb_exception_captured = 0;
 
 #if TARGET_OS_OSX
 static IMP hb_original_report_exception = NULL;
 #endif
 
-typedef struct {
-    int signal_number;
-    int address_count;
-    void *addresses[128];
-} HBSignalCrashData;
-
-void hb_exception_handler(NSException *exception);
-void hb_signal_handler(int signal);
-static void hb_capture_exception(NSException *exception, NSString *handlerName);
+HB_PRIVATE void hb_exception_handler(NSException *exception);
+HB_PRIVATE void hb_signal_handler(int signal, siginfo_t* info, void* uap);
+HB_PRIVATE void hb_capture_exception(NSException *exception, NSString *handlerName);
 #if TARGET_OS_OSX
 static void hb_install_appkit_exception_hook(void);
 #endif
+
+// -- STATIC BINARY IMAGE TABLE ----------------------------------------------
+// Rebuilt in normal (non-signal) context — at configure time and whenever dyld
+// loads an image — so the crash-time signal handler can persist symbolication
+// data from the *crashed* process with nothing but write(). Rebuilding on the
+// next launch instead would pair crash addresses with the wrong ASLR slides.
+HB_PRIVATE HBBinaryImage hb_binary_images[HB_MAX_BINARY_IMAGES];
+HB_PRIVATE volatile int hb_binary_image_count = 0;
+
+HB_PRIVATE void hb_refresh_binary_images(void)
+{
+    uint32_t dyldCount = _dyld_image_count();
+    int out = 0;
+    for ( uint32_t i = 0; i < dyldCount && out < HB_MAX_BINARY_IMAGES; i++ ) {
+        const struct mach_header* header = _dyld_get_image_header(i);
+        if ( !header ) continue;
+
+        HBBinaryImage* img = &hb_binary_images[out];
+        memset(img, 0, sizeof(*img));
+
+        const char* name = _dyld_get_image_name(i);
+        if ( name ) strlcpy(img->name, name, sizeof(img->name));
+        img->load_address = (uint64_t)(uintptr_t)header;
+        img->vmaddr_slide = (uint64_t)(uintptr_t)_dyld_get_image_vmaddr_slide(i);
+        img->cpu_type = header->cputype;
+        img->cpu_subtype = header->cpusubtype;
+
+        BOOL is64 = (header->magic == MH_MAGIC_64 || header->magic == MH_CIGAM_64);
+        uintptr_t cursor = (uintptr_t)header + (is64 ? sizeof(struct mach_header_64) : sizeof(struct mach_header));
+        uint64_t textSize = 0;  // vmsize of __TEXT, the segment load_address points at
+        for ( uint32_t j = 0; j < header->ncmds; j++ ) {
+            const struct load_command* cmd = (const struct load_command*)cursor;
+            if ( cmd->cmd == LC_UUID ) {
+                const struct uuid_command* uuidCmd = (const struct uuid_command*)cursor;
+                memcpy(img->uuid, uuidCmd->uuid, 16);
+                img->has_uuid = 1;
+            } else if ( cmd->cmd == LC_SEGMENT_64 ) {
+                const struct segment_command_64* seg = (const struct segment_command_64*)cursor;
+                if ( strncmp(seg->segname, SEG_TEXT, sizeof(seg->segname)) == 0 ) textSize = seg->vmsize;
+            } else if ( cmd->cmd == LC_SEGMENT ) {
+                const struct segment_command* seg = (const struct segment_command*)cursor;
+                if ( strncmp(seg->segname, SEG_TEXT, sizeof(seg->segname)) == 0 ) textSize = (uint64_t)seg->vmsize;
+            }
+            cursor += cmd->cmdsize;
+        }
+        // load_address is the slid __TEXT address, so __TEXT's vmsize IS the
+        // image's extent from load_address. Deliberately NOT the max segment
+        // end: dyld-shared-cache dylibs relocate __LINKEDIT/__DATA into
+        // distant cache regions, and a max-end size would swallow the gaps
+        // between neighboring dylibs, misattributing frames. Backtrace
+        // addresses are code addresses, so bounding attribution to __TEXT
+        // loses nothing.
+        img->size = textSize;
+        out++;
+    }
+    hb_binary_image_count = out;
+}
+
+// Suppresses the dyld callback until initial registration completes:
+// _dyld_register_func_for_add_image synchronously invokes the callback once
+// per already-loaded image, and each invocation rebuilds the whole table —
+// O(N^2) work at configure time for N loaded images. Registration runs with
+// the callback suppressed, then a single refresh covers everything loaded up
+// to that point; the callback handles later loads.
+static volatile sig_atomic_t hb_dyld_registration_complete = 0;
+
+static void hb_on_dyld_image_added(const struct mach_header* header, intptr_t slide)
+{
+    if ( !hb_dyld_registration_complete ) {
+        return;
+    }
+    // Full rebuild keeps this trivially correct; image loads are rare after
+    // startup. Runs in normal context (dyld callbacks are not signal context).
+    hb_refresh_binary_images();
+}
+
+// -- CONTEXT SNAPSHOT --------------------------------------------------------
+// JSON-serialized copy of the user's context, maintained in normal context on
+// every setContext/resetContext/configure, so the signal handler can persist
+// the CRASHED process's context with a bare write(). Rebuilding context on the
+// next launch would lose user/session IDs for exactly the crashes this SDK
+// exists to capture. Same accepted torn-read race as hb_binary_images: length
+// is invalidated during the copy, and the reader degrades an unparseable
+// snapshot to an empty context rather than dropping the report.
+HB_PRIVATE char hb_context_json[HB_MAX_CONTEXT_JSON];
+HB_PRIVATE volatile int hb_context_json_length = 0;
 
 // -------------------------------------------------------------------------
 
@@ -78,6 +244,7 @@ static void hb_install_appkit_exception_hook(void);
 @property (nonatomic) NSString* apiKey;
 @property (nonatomic) NSString* customEnvironment;
 @property (nonatomic) NSString* customRevision;
+@property (nonatomic) NSString* endpoint;
 @property (nonatomic) BOOL initialized;
 @property (nonatomic) NSMutableDictionary<NSString*, NSString*>* context;
 
@@ -105,14 +272,26 @@ static void hb_install_appkit_exception_hook(void);
 // CONFIG ------------------------------------------------------------------
 
 + (void) configureWithAPIKey:(NSString*)apiKey {
-    [Honeybadger configureWithAPIKey:apiKey environment:@"" revision:@""];
+    [Honeybadger configureWithAPIKey:apiKey environment:@"" revision:@"" endpoint:@""];
 }
 
 + (void) configureWithAPIKey:(NSString*)apiKey environment:(NSString*)environment {
-    [Honeybadger configureWithAPIKey:apiKey environment:environment revision:@""];
+    [Honeybadger configureWithAPIKey:apiKey environment:environment revision:@"" endpoint:@""];
 }
 
 + (void) configureWithAPIKey:(NSString*)apiKey environment:(NSString*)environment revision:(NSString*)revision {
+    [Honeybadger configureWithAPIKey:apiKey environment:environment revision:revision endpoint:@""];
+}
+
++ (void) configureWithAPIKey:(NSString*)apiKey endpoint:(NSString*)endpoint {
+    [Honeybadger configureWithAPIKey:apiKey environment:@"" revision:@"" endpoint:endpoint];
+}
+
++ (void) configureWithAPIKey:(NSString*)apiKey environment:(NSString*)environment endpoint:(NSString*)endpoint {
+    [Honeybadger configureWithAPIKey:apiKey environment:environment revision:@"" endpoint:endpoint];
+}
+
++ (void) configureWithAPIKey:(NSString*)apiKey environment:(NSString*)environment revision:(NSString*)revision endpoint:(NSString*)endpoint {
     Honeybadger* hb = [Honeybadger sharedInstance];
 
     // Ignore repeat calls. Re-running configuration would re-install the
@@ -137,11 +316,20 @@ static void hb_install_appkit_exception_hook(void);
     hb.apiKey = [hb safeTrimmedStr:apiKey];
     hb.customEnvironment = [hb safeTrimmedStr:environment];
     hb.customRevision = [hb safeTrimmedStr:revision];
+    hb.endpoint = [hb normalizedEndpointBase:endpoint];
+
     [hb setupCrashReportDirectory];
+    [hb refreshContextSnapshot];
     [hb setExceptionHandler];
     [hb installSignalHandlers];
     hb.initialized = TRUE;
-    [hb sendPendingCrashReports];
+
+    // Pending crash reports are converted and sent off the configure thread:
+    // this involves file I/O and a network request, neither of which should
+    // run on the caller's thread.
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        [hb sendPendingCrashReports];
+    });
 }
 
 
@@ -277,6 +465,7 @@ static void hb_install_appkit_exception_hook(void);
     if ( context ) {
         Honeybadger* hb = [Honeybadger sharedInstance];
         hb.context = [hb merge:hb.context with:context];
+        [hb refreshContextSnapshot];
     }
 }
 
@@ -284,7 +473,31 @@ static void hb_install_appkit_exception_hook(void);
 
 + (void) resetContext
 {
-    [Honeybadger sharedInstance].context = [NSMutableDictionary dictionary];
+    Honeybadger* hb = [Honeybadger sharedInstance];
+    hb.context = [NSMutableDictionary dictionary];
+    [hb refreshContextSnapshot];
+}
+
+
+
+// Refreshes the static JSON snapshot (hb_context_json / hb_context_json_length)
+// used by the crash-time signal handler. See the comment on hb_context_json
+// for why this exists. Must only run in normal context.
+- (void) refreshContextSnapshot
+{
+    NSData* data = nil;
+    if ( _context && [NSJSONSerialization isValidJSONObject:_context] ) {
+        data = [NSJSONSerialization dataWithJSONObject:_context options:0 error:nil];
+    }
+    if ( !data || data.length > HB_MAX_CONTEXT_JSON ) {
+        // Unserializable or oversized: omit entirely rather than persist
+        // truncated (invalid) JSON.
+        hb_context_json_length = 0;
+        return;
+    }
+    hb_context_json_length = 0;  // invalidate while the buffer is mid-copy
+    memcpy(hb_context_json, data.bytes, data.length);
+    hb_context_json_length = (int)data.length;
 }
 
 
@@ -371,7 +584,7 @@ static void hb_install_appkit_exception_hook(void);
 // Builds a Honeybadger notice from an NSException and persists it to disk.
 // Shared by the uncaught-exception handler and, on macOS, the AppKit
 // -[NSApplication reportException:] hook.
-static void hb_capture_exception(NSException *exception, NSString *handlerName)
+HB_PRIVATE void hb_capture_exception(NSException *exception, NSString *handlerName)
 {
     if ( !exception ) {
         return;
@@ -393,9 +606,19 @@ static void hb_capture_exception(NSException *exception, NSString *handlerName)
     // report is persisted, so a crash mid-persist still falls back to the
     // signal path).
     hb_exception_captured = 1;
+
+    // If the process survives this capture — macOS reportException: with
+    // NSApplicationCrashOnExceptions explicitly disabled by the host app, or a
+    // manual reportException: call — a permanently-set latch would silently
+    // disable signal reporting forever. Clear it on the next main-runloop
+    // turn: a genuinely fatal teardown aborts before this block ever runs, so
+    // the latch stays set exactly as long as the teardown needs it.
+    dispatch_async(dispatch_get_main_queue(), ^{
+        hb_exception_captured = 0;
+    });
 }
 
-void hb_exception_handler(NSException *exception)
+HB_PRIVATE void hb_exception_handler(NSException *exception)
 {
     if ( !exception ) {
         if ( hb_previous_exception_handler ) {
@@ -458,66 +681,195 @@ static void hb_install_appkit_exception_hook(void)
 
 - (void) installSignalHandlers
 {
+    static dispatch_once_t dyldOnce;
+    dispatch_once(&dyldOnce, ^{
+        // Callback is suppressed during registration (see
+        // hb_dyld_registration_complete); the refresh below covers every image
+        // loaded up to this point, and the callback covers later loads.
+        _dyld_register_func_for_add_image(&hb_on_dyld_image_added);
+        hb_dyld_registration_complete = 1;
+    });
+    hb_refresh_binary_images();
+
+    // sigaltstack is per-thread; this call covers the thread calling
+    // configure (in practice the main thread). Threads created afterward are
+    // covered by hb_thread_introspection_hook below; threads already alive
+    // stay uncovered — no API can reach them.
+    stack_t altStack;
+    memset(&altStack, 0, sizeof(altStack));
+    altStack.ss_sp = hb_signal_stack;
+    altStack.ss_size = sizeof(hb_signal_stack);
+    sigaltstack(&altStack, NULL);
+
+    static dispatch_once_t introspectionOnce;
+    dispatch_once(&introspectionOnce, ^{
+        if ( pthread_key_create(&hb_thread_alt_stack_key, hb_thread_alt_stack_destructor) == 0 ) {
+            hb_hook_install_pid = getpid();
+            hb_previous_introspection_hook =
+                pthread_introspection_hook_install(hb_thread_introspection_hook);
+        }
+    });
+
+    // Pre-warm backtrace()'s lazy unwinder/dyld state from a normal context so
+    // the crash-time call in hb_signal_handler takes no initialization paths.
+    void* warmup[2];
+    backtrace(warmup, 2);
+
     for ( int i = 0; i < HB_SIGNAL_COUNT; i++ ) {
         struct sigaction action;
         memset(&action, 0, sizeof(action));
-        sigemptyset(&action.sa_mask);
-        action.sa_handler = hb_signal_handler;
+        // Block the other fatal signals while the handler runs so a
+        // same-thread async signal can't interrupt it mid-write. Cross-thread
+        // concurrent crashes are handled by hb_handler_entered in the handler.
+        sigfillset(&action.sa_mask);
+        action.sa_sigaction = hb_signal_handler;
+        action.sa_flags = SA_ONSTACK | SA_SIGINFO;
         sigaction(hb_signals[i], &action, &hb_previous_signal_actions[i]);
     }
 }
 
-// Restores the previously installed action for `signal` and re-raises it so the
-// original handler (or the default action) runs. Async-signal-safe: uses only
-// sigaction() and raise().
-static void hb_chain_previous_signal(int signal)
+// Hands the signal to the previously installed handler with full fidelity.
+// A SA_SIGINFO predecessor (Crashlytics, Sentry, PLCrashReporter) is invoked
+// DIRECTLY with the original siginfo_t/ucontext_t — re-raising instead would
+// deliver a synthetic signal (si_code SI_USER-like, no fault address) and
+// corrupt the co-installed reporter's crash data. Plain handlers are invoked
+// directly with the signal number. SIG_DFL restores and re-raises so the
+// default action (terminate) runs; SIG_IGN does nothing. In every case our
+// own disposition is replaced first, so a predecessor that returns without
+// terminating re-faults into the predecessor, not back through us.
+// Async-signal-safe: sigaction(), raise(), and direct calls only.
+HB_PRIVATE void hb_chain_previous_signal(int signal, siginfo_t* info, void* uap)
 {
     for ( int i = 0; i < HB_SIGNAL_COUNT; i++ ) {
-        if ( hb_signals[i] == signal ) {
-            sigaction(signal, &hb_previous_signal_actions[i], NULL);
-            raise(signal);
-            break;
+        if ( hb_signals[i] != signal ) {
+            continue;
         }
+        struct sigaction previous = hb_previous_signal_actions[i];
+
+        // Remove ourselves from the delivery path before chaining.
+        sigaction(signal, &previous, NULL);
+
+        if ( previous.sa_flags & SA_SIGINFO ) {
+            if ( previous.sa_sigaction ) {
+                previous.sa_sigaction(signal, info, uap);
+            }
+        } else if ( previous.sa_handler == SIG_DFL ) {
+            // raise() alone would only mark the signal pending: sa_mask has
+            // it blocked for the duration of our handler, so the default
+            // (terminating) action would run only after we return — leaving
+            // a window where the re-armed entry latch could let a concurrent
+            // crash truncate the just-written crash file. Unblock it first so
+            // the re-raise delivers immediately and never returns.
+            // pthread_sigmask is async-signal-safe (POSIX); sigemptyset/
+            // sigaddset are plain bitmask operations on Darwin.
+            sigset_t unblock;
+            sigemptyset(&unblock);
+            sigaddset(&unblock, signal);
+            pthread_sigmask(SIG_UNBLOCK, &unblock, NULL);
+            raise(signal);
+        } else if ( previous.sa_handler != SIG_IGN && previous.sa_handler ) {
+            previous.sa_handler(signal);
+        }
+        // SIG_IGN: swallow, matching the predecessor's declared intent.
+        break;
     }
 }
 
-void hb_signal_handler(int signal)
+// One-shot entry latch for the capture path. The handler writes shared static
+// buffers and a single crash file, so a second fatal signal — another thread
+// crashing concurrently (sa_mask is per-thread and can't prevent that), or a
+// fault inside the handler itself — must not re-enter the capture path; it
+// chains straight to the predecessor instead. __sync_lock_test_and_set is
+// lock-free and async-signal-safe on all supported targets.
+HB_PRIVATE volatile sig_atomic_t hb_handler_entered = 0;
+
+HB_PRIVATE void hb_signal_handler(int signal, siginfo_t* info, void* uap)
 {
+    if ( __sync_lock_test_and_set((sig_atomic_t*)&hb_handler_entered, 1) ) {
+        hb_chain_previous_signal(signal, info, uap);
+        return;
+    }
+
     // If an NSException was already captured and persisted by the exception
     // path, this signal is just the process teardown that follows it (AppKit's
     // crash-on-exceptions trap, or abort() after an uncaught exception). Don't
     // write a second, redundant report for the same crash — only chain so the
     // process still terminates.
     if ( hb_exception_captured ) {
-        hb_chain_previous_signal(signal);
+        hb_chain_previous_signal(signal, info, uap);
+        // The chain returned, so the process survived this delivery (e.g. a
+        // SIG_IGN'd or non-terminating predecessor). Re-arm the one-shot
+        // latch — its owner is the only path that reaches this store — so a
+        // later real crash is still captured. Mirrors hb_exception_captured's
+        // own reset (see hb_capture_exception); a fatal chain never returns.
+        hb_handler_entered = 0;
         return;
     }
 
-    // Write crash data using async-signal-safe POSIX I/O only
-    HBSignalCrashData crashData;
-    memset(&crashData, 0, sizeof(crashData));
-    crashData.signal_number = signal;
+    // The entry latch makes crash handling one-shot per process, so static
+    // buffers are safe here and keep ~5KB of state off the (possibly
+    // exhausted) crashing stack.
+    static HBSignalCrashHeader header;
+    memset(&header, 0, sizeof(header));
+    header.magic = HB_SIGNAL_CRASH_MAGIC;
+    header.version = HB_SIGNAL_CRASH_VERSION;
+    header.signal_number = signal;
 
-    void *addresses[128];
-    int count = backtrace(addresses, 128);
-    crashData.address_count = count;
-    for ( int i = 0; i < count && i < 128; i++ ) {
-        crashData.addresses[i] = addresses[i];
+    // backtrace() is not formally async-signal-safe; it is the one documented
+    // exception to the signal-safety rule in this handler. It is pre-warmed at
+    // install time so no lazy initialization runs here. Issue #13 tracks
+    // replacing it with a hand-rolled frame-pointer walk.
+    static void* addresses[HB_MAX_CRASH_ADDRESSES];
+    int count = backtrace(addresses, HB_MAX_CRASH_ADDRESSES);
+
+    // Frames 0 and 1 are this handler and the kernel trampoline (_sigtramp);
+    // skip them so reports group by the faulting frame, not by Honeybadger.
+    int skip = (count > 2) ? 2 : 0;
+    header.address_count = count - skip;
+    for ( int i = 0; i < header.address_count; i++ ) {
+        header.addresses[i] = (uint64_t)(uintptr_t)addresses[i + skip];
     }
 
+    // Persist the pre-captured image table (see hb_refresh_binary_images):
+    // symbolication data must come from THIS process's address space — the
+    // next launch has different ASLR slides.
+    header.image_count = hb_binary_image_count;
+
+    // Same accepted-race treatment for the context snapshot (see
+    // hb_context_json): clamp what could only be a torn/invalid length rather
+    // than trust it blindly.
+    int contextLength = hb_context_json_length;
+    if ( contextLength < 0 || contextLength > HB_MAX_CONTEXT_JSON ) {
+        contextLength = 0;
+    }
+    header.context_length = contextLength;
+
+    // Accepted race: if a dyld image load is rebuilding hb_binary_images on
+    // another thread at the instant of the crash, the persisted table can be
+    // torn. The reader validates lengths so it can't fault; worst case is
+    // degraded symbolication for a crash that coincided with a dylib load.
     int fd = open(hb_signal_crash_file_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if ( fd >= 0 ) {
-        write(fd, &crashData, sizeof(crashData));
+        write(fd, &header, sizeof(header));
+        write(fd, hb_binary_images, (size_t)header.image_count * sizeof(HBBinaryImage));
+        if ( contextLength > 0 ) {
+            write(fd, hb_context_json, (size_t)contextLength);
+        }
         close(fd);
     }
 
     // Chain to the previously installed handler (see hb_chain_previous_signal):
-    // restoring its action and re-raising is correct for every predecessor type
-    // — SA_SIGINFO handlers are re-entered by the kernel with the right calling
-    // convention, SIG_DFL performs the default action, SIG_IGN ignores it — and
-    // it removes our handler from the delivery path so a predecessor that
-    // returns without terminating can't loop back through us and re-fault.
-    hb_chain_previous_signal(signal);
+    // a SA_SIGINFO predecessor is invoked directly with the original
+    // siginfo_t/ucontext_t, a plain handler is invoked directly with the
+    // signal number, SIG_DFL restores and re-raises so the default action
+    // runs, and SIG_IGN is swallowed — and in every case our handler is
+    // removed from the delivery path first, so a predecessor that returns
+    // without terminating can't loop back through us and re-fault.
+    hb_chain_previous_signal(signal, info, uap);
+
+    // See the exception-captured branch above: a returning chain means the
+    // process survived, so re-arm the one-shot latch for the next crash.
+    hb_handler_entered = 0;
 }
 
 - (NSString*) signalName:(int)sig
@@ -537,6 +889,16 @@ void hb_signal_handler(int signal)
 
 // -- PENDING CRASH REPORTS ------------------------------------------------
 
+// A unique destination for a signal crash report converted from the binary
+// crash file. A fixed name could overwrite an earlier, still-unsent report
+// whose async send is in flight — whose completion handler would then delete
+// the newer report on success.
+- (NSString*) uniqueSignalReportPathInDirectory:(NSString*)dir
+{
+    NSString* filename = [NSString stringWithFormat:@"crash_signal_%@.json", [[NSUUID UUID] UUIDString]];
+    return [dir stringByAppendingPathComponent:filename];
+}
+
 - (void) sendPendingCrashReports
 {
     NSString* dir = [self crashReportDirectory];
@@ -553,60 +915,100 @@ void hb_signal_handler(int signal)
             }
         } else if ( [filename hasSuffix:@".bin"] ) {
             NSData* data = [NSData dataWithContentsOfFile:path];
-            if ( data && data.length >= sizeof(HBSignalCrashData) ) {
-                HBSignalCrashData crashData;
-                [data getBytes:&crashData length:sizeof(HBSignalCrashData)];
-                NSDictionary* payload = [self buildPayloadFromSignalCrashData:&crashData];
-                if ( payload ) {
-                    NSData* jsonData = [self toNSData:payload];
-                    if ( jsonData ) {
-                        // Convert the binary crash file to a JSON report on disk,
-                        // then send from the JSON path. This ensures the report
-                        // survives if the send fails (picked up on the next launch).
-                        NSString* jsonPath = [[path stringByDeletingPathExtension]
-                                              stringByAppendingPathExtension:@"json"];
-                        [jsonData writeToFile:jsonPath atomically:YES];
-                        [fm removeItemAtPath:path error:nil];
-                        [self sendPayloadData:jsonData filePath:jsonPath];
-                    }
-                }
+            NSDictionary* payload = data ? [self payloadFromSignalCrashFileData:data] : nil;
+            if ( !payload ) {
+                // Unreadable, foreign, or stale-format file: delete it so it
+                // isn't reprocessed on every launch.
+                [fm removeItemAtPath:path error:nil];
+                continue;
             }
+            NSData* jsonData = [self toNSData:payload];
+            if ( !jsonData ) {
+                [fm removeItemAtPath:path error:nil];
+                continue;
+            }
+            // Convert to a uniquely-named JSON report on disk, then send from
+            // the JSON path so the report survives a failed send.
+            NSString* jsonPath = [self uniqueSignalReportPathInDirectory:dir];
+            if ( ![jsonData writeToFile:jsonPath atomically:YES] ) {
+                // JSON write failed (disk full, permissions): keep the .bin —
+                // it's the only persisted copy — and retry conversion on the
+                // next launch.
+                continue;
+            }
+            [fm removeItemAtPath:path error:nil];
+            [self sendPayloadData:jsonData filePath:jsonPath];
         }
     }
 }
 
-- (NSDictionary*) buildPayloadFromSignalCrashData:(HBSignalCrashData*)crashData
+// Rebuilds a notice from a persisted signal crash file. Every piece of
+// address-space data (frames' image mapping, binary_images) comes from the
+// persisted file — never from live dyld/dladdr, which describe THIS launch's
+// address space, not the crashed one.
+- (NSDictionary*) payloadFromSignalCrashFileData:(NSData*)data
 {
-    NSMutableArray* frames = [NSMutableArray array];
-    // address_count is read from a persisted file and could be corrupt or out
-    // of range; clamp to the fixed addresses[] capacity (128) so we never read
-    // past the buffer.
-    int count = crashData->address_count;
-    if ( count < 0 ) { count = 0; }
-    if ( count > 128 ) { count = 128; }
-    for ( int i = 0; i < count; i++ ) {
-        NSString* addressStr = [NSString stringWithFormat:@"0x%lx", (unsigned long)crashData->addresses[i]];
+    if ( data.length < sizeof(HBSignalCrashHeader) ) return nil;
+    HBSignalCrashHeader header;
+    [data getBytes:&header length:sizeof(header)];
+    if ( header.magic != HB_SIGNAL_CRASH_MAGIC || header.version != HB_SIGNAL_CRASH_VERSION ) return nil;
 
-        Dl_info info;
-        if ( dladdr(crashData->addresses[i], &info) ) {
-            [frames addObject:@{
-                @"file" : info.dli_fname ? [NSString stringWithUTF8String:info.dli_fname] : @"",
-                @"method" : info.dli_sname ? [NSString stringWithUTF8String:info.dli_sname] : addressStr,
-                @"number" : @"",
-                @"address" : addressStr
-            }];
-        } else {
-            [frames addObject:@{
-                @"file" : @"",
-                @"method" : addressStr,
-                @"number" : @"",
-                @"address" : addressStr
-            }];
+    int32_t addressCount = header.address_count;
+    if ( addressCount < 0 ) addressCount = 0;
+    if ( addressCount > HB_MAX_CRASH_ADDRESSES ) addressCount = HB_MAX_CRASH_ADDRESSES;
+
+    int32_t imageCount = header.image_count;
+    if ( imageCount < 0 || imageCount > HB_MAX_BINARY_IMAGES ) return nil;
+
+    int32_t contextLength = header.context_length;
+    if ( contextLength < 0 || contextLength > HB_MAX_CONTEXT_JSON ) return nil;
+
+    NSUInteger expectedLength = sizeof(HBSignalCrashHeader) + (NSUInteger)imageCount * sizeof(HBBinaryImage) + (NSUInteger)contextLength;
+    if ( data.length < expectedLength ) return nil;
+
+    const HBBinaryImage* images = (const HBBinaryImage*)((const uint8_t*)data.bytes + sizeof(HBSignalCrashHeader));
+
+    // A torn or unparseable snapshot degrades to an empty context; the crash
+    // report itself is never dropped over context.
+    NSDictionary* persistedContext = @{};
+    if ( contextLength > 0 ) {
+        NSData* contextData = [data subdataWithRange:
+            NSMakeRange(sizeof(HBSignalCrashHeader) + (NSUInteger)imageCount * sizeof(HBBinaryImage),
+                        (NSUInteger)contextLength)];
+        id parsed = [NSJSONSerialization JSONObjectWithData:contextData options:0 error:nil];
+        if ( [parsed isKindOfClass:[NSDictionary class]] ) {
+            persistedContext = parsed;
         }
     }
 
-    NSString* signalName = [self signalName:crashData->signal_number];
-    NSString* errorClass = [NSString stringWithFormat:@"%@ Signal", shortPlatformName];
+    NSMutableArray* frames = [NSMutableArray arrayWithCapacity:(NSUInteger)addressCount];
+    for ( int32_t i = 0; i < addressCount; i++ ) {
+        uint64_t addr = header.addresses[i];
+        NSString* addressStr = [NSString stringWithFormat:@"0x%llx", (unsigned long long)addr];
+
+        // Attribute the address to the recorded image whose mapped range
+        // [load_address, load_address + size) contains it. With the table
+        // capped (HB_MAX_BINARY_IMAGES), an address inside a dropped image
+        // must stay honestly unattributed ("") rather than be blamed on the
+        // nearest recorded image below it. size == 0 (unknown) falls back to
+        // the nearest-below heuristic for that image.
+        NSString* file = @"";
+        uint64_t bestLoad = 0;
+        for ( int32_t j = 0; j < imageCount; j++ ) {
+            uint64_t load = images[j].load_address;
+            if ( load > addr || load < bestLoad ) continue;
+            if ( images[j].size != 0 && addr >= load + images[j].size ) continue;
+            bestLoad = load;
+            file = [self stringFromImageName:&images[j]];
+        }
+        [frames addObject:@{ @"file" : file, @"method" : addressStr, @"number" : @"", @"address" : addressStr }];
+    }
+
+    NSString* signalName = [self signalName:header.signal_number];
+    NSMutableArray* binaryImages = [NSMutableArray arrayWithCapacity:(NSUInteger)imageCount];
+    for ( int32_t i = 0; i < imageCount; i++ ) {
+        [binaryImages addObject:[self dictionaryFromBinaryImage:&images[i]]];
+    }
 
     NSMutableDictionary* payload = [NSMutableDictionary dictionaryWithDictionary:@{
         @"notifier" : @{
@@ -615,24 +1017,19 @@ void hb_signal_handler(int signal)
             @"version" : HONEYBADGER_APPLE_SDK_VERSION
         },
         @"error" : @{
-            @"class" : errorClass,
-            @"message" : [NSString stringWithFormat:@"Signal %@ (%d)", signalName, crashData->signal_number],
+            @"class" : [NSString stringWithFormat:@"%@ Signal", shortPlatformName],
+            @"message" : [NSString stringWithFormat:@"Signal %@ (%d)", signalName, header.signal_number],
             @"backtrace" : frames
         },
         @"request" : @{
-            @"context" : _context ? _context : @{}
+            @"context" : persistedContext
         },
         @"server" : @{
             @"environment_name" : [self environment],
-            @"hostname" : ([[NSProcessInfo processInfo] hostName] ?: @""),
-            @"pid" : @([[NSProcessInfo processInfo] processIdentifier])
-        }
+            @"pid" : @(0)  // the crashed process's pid is gone; 0 = unknown
+        },
+        @"binary_images" : binaryImages
     }];
-
-    NSArray* binaryImages = [self captureBinaryImages];
-    if ( binaryImages ) {
-        payload[@"binary_images"] = binaryImages;
-    }
 
     [self addServerRevisionToPayload:payload];
 
@@ -664,7 +1061,7 @@ void hb_signal_handler(int signal)
             @"errorDomain" : [self stringValueForKey:@"errorDomain" fromDictionary:data defaultValue:@""],
             @"initialHandler" : [self stringValueForKey:@"initialHandler" fromDictionary:data defaultValue:@""],
             @"userInfo" : data[@"userInfo"] ? data[@"userInfo"] : @{},
-            @"architecture" : [NSString stringWithUTF8String:NXGetLocalArchInfo()->name]
+            @"architecture" : [self currentArchitectureName]
         },
         @"context" : (data[@"context"] ? data[@"context"] : (_context ? _context : @{})),
         @"fingerprint" : (data[@"fingerprint"] ? data[@"fingerprint"] : @""),
@@ -807,7 +1204,6 @@ void hb_signal_handler(int signal)
         },
         @"server" : @{
             @"environment_name" : [self environment],
-            @"hostname" : ([[NSProcessInfo processInfo] hostName] ?: @""),
             @"pid" : @([[NSProcessInfo processInfo] processIdentifier])
         }
     }];
@@ -859,6 +1255,46 @@ void hb_signal_handler(int signal)
     [data writeToFile:path atomically:YES];
 }
 
+// Normalizes a user-supplied endpoint base URL. Returns @"" for empty input
+// (meaning "use the default") and for invalid input (after logging a
+// warning). A typo must not silently disable crash reporting — the caller
+// falls back to the production default.
+- (NSString*) normalizedEndpointBase:(NSString*)endpoint
+{
+    NSString* trimmed = [self safeTrimmedStr:endpoint];
+    while ( [trimmed hasSuffix:@"/"] ) {
+        trimmed = [trimmed substringToIndex:trimmed.length - 1];
+    }
+    if ( trimmed.length == 0 ) {
+        return @"";
+    }
+    NSURLComponents* components = [NSURLComponents componentsWithString:trimmed];
+    BOOL schemeOK = [components.scheme.lowercaseString isEqualToString:@"http"] ||
+                    [components.scheme.lowercaseString isEqualToString:@"https"];
+    if ( !components || !schemeOK || components.host.length == 0 ||
+         components.query != nil || components.fragment != nil ) {
+        NSLog(@"Honeybadger: invalid endpoint \"%@\", ignoring", endpoint);
+        return @"";
+    }
+    return trimmed;
+}
+
+// Resolves the notices URL. Precedence: env override (dev/e2e), then the
+// configured endpoint, then the production default. Both inputs are
+// normalized here, so a blank or invalid HONEYBADGER_ENDPOINT cannot mask a
+// valid configured endpoint.
+- (NSString*) noticesURLWithEnvOverride:(NSString*)envOverride configuredEndpoint:(NSString*)configuredEndpoint
+{
+    NSString* base = [self normalizedEndpointBase:envOverride];
+    if ( base.length == 0 ) {
+        base = [self normalizedEndpointBase:configuredEndpoint];
+    }
+    if ( base.length == 0 ) {
+        base = @"https://api.honeybadger.io";
+    }
+    return [base stringByAppendingString:@"/v1/notices"];
+}
+
 - (void) sendToHoneybadger:(NSDictionary*)payload
 {
     if ( !payload || ![self isValidAPIKey:_apiKey] ) {
@@ -880,7 +1316,11 @@ void hb_signal_handler(int signal)
 
 - (void) sendPayloadData:(NSData*)dataToSend filePath:(NSString*)filePath
 {
-    NSString* url = @"https://api.honeybadger.io/v1/notices";
+    // Local/dev override: HONEYBADGER_ENDPOINT=http://localhost:8011 points the
+    // SDK at a local collector (e2e testing). Otherwise the configured
+    // endpoint (EU stack, proxy), otherwise the production default.
+    NSString* envOverride = [[[NSProcessInfo processInfo] environment] objectForKey:@"HONEYBADGER_ENDPOINT"] ?: @"";
+    NSString* url = [self noticesURLWithEnvOverride:envOverride configuredEndpoint:_endpoint ?: @""];
 
     NSMutableURLRequest* request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:url]];
     [request setHTTPMethod:@"POST"];
@@ -937,6 +1377,15 @@ void hb_signal_handler(int signal)
 
 
 
+- (NSString*) currentArchitectureName
+{
+    const struct mach_header* header = _dyld_get_image_header(0);
+    const char* name = header ? macho_arch_name_for_mach_header(header) : NULL;
+    return name ? [NSString stringWithUTF8String:name] : @"";
+}
+
+
+
 - (NSString*) platformVersion
 {
 #if (TARGET_OS_IOS || TARGET_OS_VISION)
@@ -959,6 +1408,10 @@ void hb_signal_handler(int signal)
 
 #if TARGET_OS_SIMULATOR
     return @"simulator";
+#elif DEBUG
+    // Both SPM and CocoaPods compile this SDK from source with the host
+    // app's build configuration, so DEBUG here tracks the app's Debug builds.
+    return @"development";
 #else
     return @"production";
 #endif
@@ -1143,56 +1596,49 @@ void hb_signal_handler(int signal)
 
 - (NSArray*) captureBinaryImages
 {
-    NSMutableArray* images = [NSMutableArray array];
-
-    uint32_t count = _dyld_image_count();
-    for ( uint32_t i = 0; i < count; i++ ) {
-        const struct mach_header* header = _dyld_get_image_header(i);
-        if ( !header ) continue;
-
-        const char* name = _dyld_get_image_name(i);
-        intptr_t slide = _dyld_get_image_vmaddr_slide(i);
-
-        // Walk Mach-O load commands to find LC_UUID
-        NSString* uuidStr = nil;
-        NSString* archStr = nil;
-
-        BOOL is64 = (header->magic == MH_MAGIC_64 || header->magic == MH_CIGAM_64);
-        uintptr_t cursor = (uintptr_t)header + (is64 ? sizeof(struct mach_header_64) : sizeof(struct mach_header));
-
-        for ( uint32_t j = 0; j < header->ncmds; j++ ) {
-            const struct load_command* cmd = (const struct load_command*)cursor;
-            if ( cmd->cmd == LC_UUID ) {
-                const struct uuid_command* uuidCmd = (const struct uuid_command*)cursor;
-                const uint8_t* uuid = uuidCmd->uuid;
-                uuidStr = [NSString stringWithFormat:
-                    @"%02X%02X%02X%02X-%02X%02X-%02X%02X-%02X%02X-%02X%02X%02X%02X%02X%02X",
-                    uuid[0], uuid[1], uuid[2], uuid[3],
-                    uuid[4], uuid[5],
-                    uuid[6], uuid[7],
-                    uuid[8], uuid[9],
-                    uuid[10], uuid[11], uuid[12], uuid[13], uuid[14], uuid[15]];
-                break;
-            }
-            cursor += cmd->cmdsize;
-        }
-
-        const NXArchInfo* archInfo = NXGetArchInfoFromCpuType(header->cputype, header->cpusubtype);
-        if ( archInfo ) {
-            archStr = [NSString stringWithUTF8String:archInfo->name];
-        }
-
-        NSMutableDictionary* imageDict = [NSMutableDictionary dictionary];
-        imageDict[@"name"] = name ? [NSString stringWithUTF8String:name] : @"";
-        imageDict[@"load_address"] = [NSString stringWithFormat:@"0x%lx", (unsigned long)header];
-        imageDict[@"vmaddr_slide"] = [NSString stringWithFormat:@"0x%lx", (unsigned long)slide];
-        if ( uuidStr ) imageDict[@"uuid"] = uuidStr;
-        if ( archStr ) imageDict[@"arch"] = archStr;
-
-        [images addObject:imageDict];
+    hb_refresh_binary_images();
+    int count = hb_binary_image_count;
+    NSMutableArray* images = [NSMutableArray arrayWithCapacity:(NSUInteger)count];
+    for ( int i = 0; i < count; i++ ) {
+        [images addObject:[self dictionaryFromBinaryImage:&hb_binary_images[i]]];
     }
-
     return images;
+}
+
+// The name field of a persisted image record is untrusted input: a torn or
+// corrupt crash file may not be NUL-terminated, and stringWithUTF8String:
+// would read past the fixed-size field (past the end of the NSData for the
+// last record). Copy into a bounded buffer and force-terminate first.
+- (NSString*) stringFromImageName:(const HBBinaryImage*)img
+{
+    char name[sizeof(img->name) + 1];
+    memcpy(name, img->name, sizeof(img->name));
+    name[sizeof(img->name)] = '\0';
+    return [NSString stringWithUTF8String:name] ?: @"";
+}
+
+- (NSDictionary*) dictionaryFromBinaryImage:(const HBBinaryImage*)img
+{
+    NSMutableDictionary* imageDict = [NSMutableDictionary dictionary];
+    imageDict[@"name"] = [self stringFromImageName:img];
+    imageDict[@"load_address"] = [NSString stringWithFormat:@"0x%llx", (unsigned long long)img->load_address];
+    imageDict[@"vmaddr_slide"] = [NSString stringWithFormat:@"0x%llx", (unsigned long long)img->vmaddr_slide];
+    imageDict[@"size"] = [NSString stringWithFormat:@"0x%llx", (unsigned long long)img->size];
+    if ( img->has_uuid ) {
+        const uint8_t* uuid = img->uuid;
+        imageDict[@"uuid"] = [NSString stringWithFormat:
+            @"%02X%02X%02X%02X-%02X%02X-%02X%02X-%02X%02X-%02X%02X%02X%02X%02X%02X",
+            uuid[0], uuid[1], uuid[2], uuid[3],
+            uuid[4], uuid[5],
+            uuid[6], uuid[7],
+            uuid[8], uuid[9],
+            uuid[10], uuid[11], uuid[12], uuid[13], uuid[14], uuid[15]];
+    }
+    const char* archName = macho_arch_name_for_cpu_type(img->cpu_type, img->cpu_subtype);
+    if ( archName ) {
+        imageDict[@"arch"] = [NSString stringWithUTF8String:archName] ?: @"";
+    }
+    return imageDict;
 }
 
 @end

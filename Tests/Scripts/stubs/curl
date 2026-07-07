@@ -1,0 +1,50 @@
+#!/bin/bash
+# Test stub for curl. CURL_MODE controls behavior:
+#   ok             -> presigned-URL request returns JSON+200; PUT returns 200
+#   http-fail            -> every request returns HTTP 500
+#   transport-fail       -> exit 6 (DNS failure), like a network hiccup
+#   upload-403-then-ok   -> first PUT returns 403, retry PUT returns 200
+#   header-required      -> presign returns an upload header; PUT fails without it
+STATE_FILE="${TMPDIR:-/tmp}/hb-curl-stub-upload-attempts"
+case "${CURL_MODE:-ok}" in
+    ok)
+        if [[ "$*" == *"/v1/dsyms"* ]]; then
+            printf '{"upload_url":"https://example.invalid/put"}\n200'
+        else
+            printf '\n200'
+        fi
+        ;;
+    http-fail)
+        printf 'server says no\n500'
+        ;;
+    transport-fail)
+        exit 6
+        ;;
+    upload-403-then-ok)
+        if [[ "$*" == *"/v1/dsyms"* ]]; then
+            rm -f "$STATE_FILE"
+            printf '{"upload_url":"https://example.invalid/put"}\n200'
+        else
+            count=0
+            if [[ -f "$STATE_FILE" ]]; then
+                count="$(cat "$STATE_FILE")"
+            fi
+            count=$((count+1))
+            printf '%s' "$count" > "$STATE_FILE"
+            if [[ "$count" -eq 1 ]]; then
+                printf 'signature mismatch\n403'
+            else
+                printf '\n200'
+            fi
+        fi
+        ;;
+    header-required)
+        if [[ "$*" == *"/v1/dsyms"* ]]; then
+            printf '{"upload_url":"https://example.invalid/put","upload_headers":{"x-amz-server-side-encryption":"AES256"}}\n200'
+        elif [[ "$*" == *"x-amz-server-side-encryption: AES256"* ]]; then
+            printf '\n200'
+        else
+            printf 'missing signed header\n403'
+        fi
+        ;;
+esac
