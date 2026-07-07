@@ -24,9 +24,6 @@ API_KEY=""
 DSYM_PATH=""
 REVISION=""
 ENDPOINT=""
-# Endpoint precedence: --endpoint flag, then HONEYBADGER_API_BASE (kept for
-# CI/e2e compatibility), then the production default. Resolved after the
-# option loop below.
 WARN_ONLY=0
 
 usage() {
@@ -40,7 +37,7 @@ usage() {
     echo "               revision configured in the SDK."
     echo "  --endpoint   Base URL of the Honeybadger API. Use"
     echo "               https://eu-api.honeybadger.io for the EU stack."
-    echo "               (defaults to \$HONEYBADGER_API_BASE or https://api.honeybadger.io)"
+    echo "               (default: https://api.honeybadger.io)"
     echo "  --warn-only  Always exit 0, even if uploads fail (for build phases"
     echo "               that should not fail the build)"
     exit 1
@@ -75,7 +72,7 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-API_BASE="${ENDPOINT:-${HONEYBADGER_API_BASE:-https://api.honeybadger.io}}"
+API_BASE="${ENDPOINT:-https://api.honeybadger.io}"
 while [[ "$API_BASE" == */ ]]; do API_BASE="${API_BASE%/}"; done
 
 if [[ -z "$API_KEY" ]]; then

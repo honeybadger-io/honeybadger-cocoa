@@ -58,6 +58,14 @@ Examples/ProductionSmokeTest/run_signal_smoke.sh \
   --wait-seconds 45
 ```
 
+To point everything (dSYM upload and crash reports) at a different API base URL —
+the EU stack, or a locally-running collector for end-to-end testing:
+
+```shell
+HONEYBADGER_API_KEY=YOUR_PROJECT_API_KEY \
+Examples/ProductionSmokeTest/run_signal_smoke.sh --endpoint https://eu-api.honeybadger.io
+```
+
 To exercise the crash/replay flow without uploading dSYMs:
 
 ```shell
