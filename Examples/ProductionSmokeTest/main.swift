@@ -274,7 +274,7 @@ case .replay:
     if waitForSignalReplayCompletion(directory: directory, initialReports: before, timeout: options.waitSeconds) {
         print("Production API accepted the signal crash report; pending signal report was removed.")
         print("Search Honeybadger for marker/fingerprint: \(marker)")
-        print("Expected symbolicated frame includes: triggerHoneybadgerProductionSmokeSignalCrash")
+        print("Expected symbolicated frame includes: enterHoneybadgerProductionSmokeSignalCrash")
         exit(0)
     }
 

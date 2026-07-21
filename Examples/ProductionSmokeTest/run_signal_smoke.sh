@@ -220,7 +220,7 @@ echo ""
 echo "Done. Search Honeybadger for marker/fingerprint:"
 echo "$MARKER"
 if [[ $SKIP_DSYM_UPLOAD -eq 0 ]]; then
-    echo "Expected symbolicated frame includes: triggerHoneybadgerProductionSmokeSignalCrash"
+    echo "Expected symbolicated frame includes: enterHoneybadgerProductionSmokeSignalCrash"
 else
     echo "dSYM upload was skipped, so the report may show raw addresses."
 fi

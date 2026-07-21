@@ -47,7 +47,8 @@ The script:
 
 The script prints a unique marker/fingerprint. Search Honeybadger for that
 marker. With dSYM upload working, the report should include a symbolicated frame
-similar to `triggerHoneybadgerProductionSmokeSignalCrash`.
+similar to `enterHoneybadgerProductionSmokeSignalCrash`. The deliberate bad-memory
+access reports fault address `0x1`, so the first attributable app frame is its caller.
 
 Useful options:
 
