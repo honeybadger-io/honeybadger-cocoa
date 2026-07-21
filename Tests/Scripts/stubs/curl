@@ -6,6 +6,20 @@
 #   upload-403-then-ok   -> first PUT returns 403, retry PUT returns 200
 #   header-required      -> presign returns an upload header; PUT fails without it
 STATE_FILE="${TMPDIR:-/tmp}/hb-curl-stub-upload-attempts"
+
+# Tests may capture the presign request body to assert the exact client/API
+# contract. Upload PUT bodies are deliberately excluded.
+if [[ -n "${CURL_CAPTURE_FILE:-}" && "$*" == *"/v1/dsyms"* ]]; then
+    while [[ $# -gt 0 ]]; do
+        if [[ "$1" == "-d" || "$1" == "--data" || "$1" == "--data-raw" ]]; then
+            shift
+            printf '%s\n' "$1" >> "$CURL_CAPTURE_FILE"
+            break
+        fi
+        shift
+    done
+fi
+
 case "${CURL_MODE:-ok}" in
     ok)
         if [[ "$*" == *"/v1/dsyms"* ]]; then

@@ -62,6 +62,29 @@ fi
 CURL_MODE=header-required bash "$UPLOAD" --api-key test --dsym-path "$WORK/dsyms" > "$WORK/out7.log" 2>&1
 check "presign upload_headers are sent -> exit 0" 0 $?
 
+REVISION='release "quoted" \ 日本語'
+CURL_CAPTURE_FILE="$WORK/presign-bodies.jsonl" CURL_MODE=ok \
+    bash "$UPLOAD" --api-key test --dsym-path "$WORK/dsyms" --revision "$REVISION" \
+    > "$WORK/out8.log" 2>&1
+check "revision upload succeeds -> exit 0" 0 $?
+if python3 - "$WORK/presign-bodies.jsonl" "$REVISION" <<'PY'
+import json, sys
+
+path, expected_revision = sys.argv[1:]
+with open(path) as f:
+    bodies = [json.loads(line) for line in f if line.strip()]
+
+assert len(bodies) == 2
+assert all(body["revision"] == expected_revision for body in bodies)
+assert all(body["filename"].endswith(".dSYM.zip") for body in bodies)
+assert all(isinstance(body["filesize"], int) and body["filesize"] > 0 for body in bodies)
+PY
+then
+    echo "PASS: presign JSON preserves the exact revision"; PASS=$((PASS+1))
+else
+    echo "FAIL: presign JSON did not preserve the exact revision"; FAIL=$((FAIL+1))
+fi
+
 echo ""
 echo "$PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]]
