@@ -2,6 +2,7 @@
 #import "HoneybadgerTestAccess.h"
 #include <signal.h>
 #include <string.h>
+#include <sys/ucontext.h>
 
 // Chaining must hand a SA_SIGINFO predecessor the ORIGINAL siginfo_t/ucontext
 // (fault address intact), not a synthetic re-raise. These tests exercise
@@ -35,6 +36,77 @@ void run_signal_chain_tests(void)
     int idx = index_of_signal(SIGSEGV);
     HB_TEST_BEGIN("testSignalTableContainsSIGSEGV");
     HB_ASSERT_TRUE(idx >= 0);
+
+    HB_TEST_BEGIN("testInterruptedProgramCounterUsesMachineContext");
+    ucontext_t context;
+    memset(&context, 0, sizeof(context));
+    _STRUCT_MCONTEXT machineContext;
+    memset(&machineContext, 0, sizeof(machineContext));
+    context.uc_mcontext = &machineContext;
+    context.uc_mcsize = sizeof(machineContext);
+#if defined(__arm64__)
+    machineContext.__ss.__pc = 0x100001234ULL;
+#elif defined(__x86_64__)
+    machineContext.__ss.__rip = 0x100001234ULL;
+#endif
+    uint64_t programCounter = 0;
+    HB_ASSERT_TRUE(hb_interrupted_program_counter(&context, &programCounter));
+    HB_ASSERT_EQ_INT((long long)programCounter, 0x100001234ULL);
+
+    HB_TEST_BEGIN("testInterruptedProgramCounterRejectsUnavailableContext");
+    HB_ASSERT_TRUE(!hb_interrupted_program_counter(NULL, &programCounter));
+    context.uc_mcontext = NULL;
+    HB_ASSERT_TRUE(!hb_interrupted_program_counter(&context, &programCounter));
+    context.uc_mcontext = &machineContext;
+    context.uc_mcsize = sizeof(machineContext) - 1;
+    HB_ASSERT_TRUE(!hb_interrupted_program_counter(&context, &programCounter));
+
+    HB_TEST_BEGIN("testSignalAddressesPrependExactInterruptedPC");
+    context.uc_mcsize = sizeof(machineContext);
+    void* unwound[] = { (void*)0x10, (void*)0x20, (void*)0x100002000, (void*)0x100003000 };
+    uint64_t crashAddresses[4] = {0};
+    int32_t firstFrameIsReturnAddress = -1;
+    int crashAddressCount = hb_build_signal_addresses(
+        &context, unwound, 4, crashAddresses, 4, &firstFrameIsReturnAddress
+    );
+    HB_ASSERT_EQ_INT(crashAddressCount, 3);
+    HB_ASSERT_EQ_INT((long long)crashAddresses[0], 0x100001234ULL);
+    HB_ASSERT_EQ_INT((long long)crashAddresses[1], 0x100002000ULL);
+    HB_ASSERT_EQ_INT((long long)crashAddresses[2], 0x100003000ULL);
+    HB_ASSERT_EQ_INT(firstFrameIsReturnAddress, 0);
+
+    HB_TEST_BEGIN("testZeroInterruptedPCRemainsAnExactFrame");
+#if defined(__arm64__)
+    machineContext.__ss.__pc = 0;
+#elif defined(__x86_64__)
+    machineContext.__ss.__rip = 0;
+#endif
+    firstFrameIsReturnAddress = -1;
+    crashAddressCount = hb_build_signal_addresses(
+        &context, NULL, 0, crashAddresses, 4, &firstFrameIsReturnAddress
+    );
+    HB_ASSERT_EQ_INT(crashAddressCount, 1);
+    HB_ASSERT_EQ_INT((long long)crashAddresses[0], 0);
+    HB_ASSERT_EQ_INT(firstFrameIsReturnAddress, 0);
+
+    HB_TEST_BEGIN("testSignalAddressesMarkFallbackStackAsReturnAddresses");
+    memset(crashAddresses, 0, sizeof(crashAddresses));
+    firstFrameIsReturnAddress = 0;
+    crashAddressCount = hb_build_signal_addresses(
+        NULL, unwound, 4, crashAddresses, 4, &firstFrameIsReturnAddress
+    );
+    HB_ASSERT_EQ_INT(crashAddressCount, 2);
+    HB_ASSERT_EQ_INT((long long)crashAddresses[0], 0x100002000ULL);
+    HB_ASSERT_EQ_INT((long long)crashAddresses[1], 0x100003000ULL);
+    HB_ASSERT_EQ_INT(firstFrameIsReturnAddress, 1);
+
+    HB_TEST_BEGIN("testSignalAddressesDiscardPartialInternalUnwind");
+    firstFrameIsReturnAddress = 0;
+    crashAddressCount = hb_build_signal_addresses(
+        NULL, unwound, 1, crashAddresses, 4, &firstFrameIsReturnAddress
+    );
+    HB_ASSERT_EQ_INT(crashAddressCount, 0);
+    HB_ASSERT_EQ_INT(firstFrameIsReturnAddress, 1);
 
     // Snapshot real state so these tests leave no trace.
     struct sigaction savedDisposition;

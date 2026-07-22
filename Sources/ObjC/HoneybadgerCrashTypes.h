@@ -27,8 +27,9 @@ typedef struct {
 // from the signal handler. magic/version let the reader reject foreign or
 // stale files.
 #define HB_SIGNAL_CRASH_MAGIC   0x48425343u  /* "HBSC" */
-// v4 = per-image `size` + 1024-image cap (v3: no size, 512 cap).
-#define HB_SIGNAL_CRASH_VERSION 4u
+// v5 = records whether frame zero is an exact interrupted PC or a fallback
+// return address (v4: per-image `size` + 1024-image cap).
+#define HB_SIGNAL_CRASH_VERSION 5u
 #define HB_MAX_CRASH_ADDRESSES  128
 #define HB_MAX_CONTEXT_JSON     8192
 
@@ -40,4 +41,5 @@ typedef struct {
     uint64_t addresses[HB_MAX_CRASH_ADDRESSES];
     int32_t  image_count;
     int32_t  context_length;
+    int32_t  first_frame_is_return_address;
 } HBSignalCrashHeader;

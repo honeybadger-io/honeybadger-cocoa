@@ -46,9 +46,9 @@ The script:
    report.
 
 The script prints a unique marker/fingerprint. Search Honeybadger for that
-marker. With dSYM upload working, the report should include a symbolicated frame
-similar to `enterHoneybadgerProductionSmokeSignalCrash`. The deliberate bad-memory
-access reports fault address `0x1`, so the first attributable app frame is its caller.
+marker. With dSYM upload working, frame zero should symbolicate to
+`triggerHoneybadgerProductionSmokeSignalCrash`, the function containing the deliberate bad-memory
+access. The fault address remains `0x1`, while frame zero comes from the interrupted machine PC.
 
 Useful options:
 

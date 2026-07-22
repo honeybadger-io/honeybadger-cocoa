@@ -17,6 +17,11 @@ static uint64_t recurse(uint64_t n) {
     return recurse(n + 1) + (uint64_t)pad[0];
 }
 
+__attribute__((noinline)) static void trigger_integration_signal_crash(void) {
+    volatile int* p = (volatile int*)0x1;
+    *p = 42;
+}
+
 int main(int argc, char** argv) {
     @autoreleasepool {
         NSString* mode = argc > 1 ? [NSString stringWithUTF8String:argv[1]] : @"";
@@ -32,8 +37,7 @@ int main(int argc, char** argv) {
         [marker writeToFile:markerPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
 
         if ( [mode isEqualToString:@"crash"] ) {
-            volatile int* p = NULL;
-            *p = 42;  // SIGSEGV
+            trigger_integration_signal_crash();
         } else if ( [mode isEqualToString:@"overflow"] ) {
             return (int)recurse(0);  // stack-overflow SIGSEGV
         } else if ( [mode isEqualToString:@"overflow-thread"] ) {

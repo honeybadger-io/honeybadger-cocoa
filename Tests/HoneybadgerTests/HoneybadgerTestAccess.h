@@ -20,6 +20,13 @@ extern volatile int hb_context_json_length;
 
 extern volatile sig_atomic_t hb_handler_entered;
 void hb_signal_handler(int signal, siginfo_t* info, void* uap);
+int hb_interrupted_program_counter(void* uap, uint64_t* programCounter);
+int hb_build_signal_addresses(void* uap,
+                              void* const* unwoundAddresses,
+                              int unwoundCount,
+                              uint64_t* crashAddresses,
+                              int crashCapacity,
+                              int32_t* firstFrameIsReturnAddress);
 
 // White-box access to SDK internals for tests. ObjC has no real privacy:
 // these declarations let tests message the private methods on the shared
