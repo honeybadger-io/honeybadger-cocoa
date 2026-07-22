@@ -2,6 +2,16 @@
 
 An SDK for integrating [Honeybadger](https://honeybadger.io) into your iOS, macOS, and visionOS apps. This SDK can be used in both Swift and Objective-C projects.
 
+## Requirements
+
+Version 2.x of the SDK requires:
+
+- iOS 16.0+
+- macOS 13.0+
+- visionOS 1.0+
+
+If you need to support earlier OS versions, use the 1.x release of the SDK, which supports iOS 13.0+ and macOS 10.15+.
+
 ## Installation
 
 [![SwiftPM compatible](https://img.shields.io/badge/SwiftPM-compatible-brightgreen.svg)](https://swift.org/package-manager)
@@ -73,6 +83,54 @@ Honeybadger.configure(
 ];
 ```
 
+You can also supply an optional **revision** to track which release an error came from (e.g. a version string, build number, or git SHA). Use the same value when uploading dSYMs (see [dSYM Upload for Symbolication](#dsym-upload-for-symbolication)) so dSYMs and the errors they symbolicate are tagged with the same revision.
+
+#### Swift
+
+```swift
+Honeybadger.configure(
+	apiKey:"{{PROJECT_API_KEY}}",
+	environment:"Staging",
+	revision:"1.4.2"
+)
+```
+
+#### Objective-C
+```objc
+[Honeybadger 
+	configureWithAPIKey:@"{{PROJECT_API_KEY}}"
+	environment:@"Staging"
+	revision:@"1.4.2"
+];
+```
+
+## Using the EU Stack
+
+If your Honeybadger account is on the EU stack, pass the EU endpoint when
+configuring the SDK:
+
+#### Swift
+
+```swift
+Honeybadger.configure(apiKey: "YOUR_API_KEY", endpoint: "https://eu-api.honeybadger.io")
+```
+
+#### Objective-C
+
+```objc
+[Honeybadger configureWithAPIKey:@"YOUR_API_KEY" endpoint:@"https://eu-api.honeybadger.io"];
+```
+
+The endpoint is the base URL of the Honeybadger API (scheme + host, with an
+optional path prefix if you route through a proxy). When omitted, the SDK
+reports to https://api.honeybadger.io.
+
+[dSYM uploads](#dsym-upload-for-symbolication) are configured separately, in the build phase that runs the
+upload script:
+
+```shell
+"${PODS_ROOT}/Honeybadger/bin/upload-dsyms.sh" --api-key "YOUR_API_KEY" --endpoint "https://eu-api.honeybadger.io"
+```
 
 ## Usage Examples
 Errors and exceptions will be automatically handled by the Honeybadger library, but you can also use the following API to customize error handling in your application.
@@ -294,8 +352,67 @@ Honeybadger.resetContext();
 #### Objective-C
 
 ```objc
-[Honeybadger setContext];
+[Honeybadger resetContext];
 ```
+
+## dSYM Upload for Symbolication
+
+When Xcode builds your app for distribution, it strips debug symbols from the binary to reduce file size. These symbols are saved separately in a `.dSYM` bundle alongside your build. Without uploading these bundles to Honeybadger, crash reports will show raw memory addresses instead of the function names, file names, and line numbers you need to diagnose the crash.
+
+Uploading dSYMs lets Honeybadger display fully symbolicated stack traces like:
+
+```
+triggerExceptionCrash()   ViewController.swift:42
+AppDelegate.application   AppDelegate.swift:18
+```
+
+The upload is handled by `bin/upload-dsyms.sh`. It automatically reads
+`DWARF_DSYM_FOLDER_PATH` (which Xcode sets during a build), so no extra
+configuration is needed. Store your API key in an Xcode build setting or
+environment variable rather than hardcoding it.
+
+### Xcode Build Phase (Recommended)
+
+Add the script as a Run Script build phase so dSYMs upload automatically whenever you archive a build:
+
+1. In Xcode, select your app target and go to **Build Phases**.
+2. Click **+** and select **New Run Script Phase**.
+3. Drag the new phase **below** the existing "Copy dSYMs" phase.
+4. Add the run script for your installation method (below).
+
+**CocoaPods** — the script is installed with the pod, so reference it from `${PODS_ROOT}`:
+
+```shell
+bash "${PODS_ROOT}/Honeybadger/bin/upload-dsyms.sh" --api-key "${HB_API_KEY}" --warn-only
+```
+
+**Swift Package Manager** — SPM does not install standalone scripts to a referenceable location. Download `bin/upload-dsyms.sh` from this repository, add it to your project (e.g. at `Scripts/upload-dsyms.sh`), and reference it:
+
+```shell
+bash "${SRCROOT}/Scripts/upload-dsyms.sh" --api-key "${HB_API_KEY}" --warn-only
+```
+
+`--warn-only` makes the script always exit 0 so a failed upload never fails your archive; omit it in CI, where a nonzero exit on failed uploads is what you want.
+
+### Manual / CI Upload
+
+To upload dSYMs manually or from a CI pipeline, run the script directly with an explicit path:
+
+```shell
+bash upload-dsyms.sh --api-key YOUR_API_KEY --dsym-path /path/to/dSYMs/
+```
+
+The script uploads all `.dSYM` bundles found in the specified directory.
+
+### Revision (optional)
+
+If you configure a **revision** in the SDK (the `revision:` parameter of `configure`), pass the **same value** to the upload script with `--revision` so the uploaded dSYMs and the errors they symbolicate share one revision:
+
+```shell
+bash upload-dsyms.sh --api-key YOUR_API_KEY --revision "1.4.2"
+```
+
+Revision is purely for release tracking — dSYM-to-crash matching is done by build UUID, so it works with or without a revision.
 
 ## License
 
