@@ -20,7 +20,7 @@ mkdir -p "$HOME"
 REPORT_DIR="$HOME/Library/Caches/HoneybadgerCrashReports"
 
 echo "Building harness..."
-clang -fobjc-arc -framework Foundation \
+clang -g -O0 -fobjc-arc -framework Foundation \
     -I "$REPO_ROOT/Sources/ObjC/include" -I "$REPO_ROOT/Sources/ObjC" \
     "$REPO_ROOT/Sources/ObjC/Honeybadger.m" "$SCRIPT_DIR/crash_harness.m" \
     -o "$WORK/harness" || { echo "FAIL: harness build"; exit 1; }
@@ -43,7 +43,7 @@ JSON=$(ls "$REPORT_DIR"/crash_signal_*.json 2>/dev/null | head -1)
 
 echo "Crashed-run load address: $CRASH_LOAD; replay-run: $REPLAY_LOAD"
 python3 - "$JSON" "$CRASH_LOAD" "$REPLAY_LOAD" "$WORK/harness" <<'EOF'
-import json, sys
+import json, subprocess, sys
 payload = json.load(open(sys.argv[1]))
 crash_load, replay_load, harness = sys.argv[2], sys.argv[3], sys.argv[4]
 images = payload.get("binary_images", [])
@@ -55,6 +55,15 @@ if crash_load != replay_load:
     assert got != replay_load, "binary_images came from the replay process (ASLR bug regressed)"
 frames = payload["error"]["backtrace"]
 assert frames, "no frames in replayed report"
+assert "first_frame_is_return_address" not in payload, "real signal PC must be exact frame zero"
+frame_zero = frames[0]["address"]
+resolved = subprocess.check_output(
+    ["atos", "-o", harness, "-l", crash_load, frame_zero], text=True
+).strip()
+assert "trigger_integration_signal_crash" in resolved, (
+    f"frame zero resolved to {resolved!r}, expected dedicated crash helper"
+)
+print(f"PASS: exact interrupted PC is frame zero ({resolved})")
 assert payload["error"]["message"].startswith("Signal SIGSEGV"), payload["error"]["message"]
 print("PASS: replayed report symbolication data comes from the crashed process")
 ctx = payload.get("request", {}).get("context", {})

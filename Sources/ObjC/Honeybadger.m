@@ -12,6 +12,7 @@
 #include <mach-o/loader.h>
 #include <dlfcn.h>
 #include <signal.h>
+#include <sys/ucontext.h>
 #include <pthread.h>
 #include <pthread/introspection.h>
 #include <fcntl.h>
@@ -786,6 +787,63 @@ HB_PRIVATE void hb_chain_previous_signal(int signal, siginfo_t* info, void* uap)
 // lock-free and async-signal-safe on all supported targets.
 HB_PRIVATE volatile sig_atomic_t hb_handler_entered = 0;
 
+// Extracts the instruction pointer that Darwin saved when delivering the
+// signal. Unlike backtrace(), this is the exact interrupted instruction, not
+// a return address captured from inside Honeybadger's handler.
+HB_PRIVATE int hb_interrupted_program_counter(void* uap, uint64_t* programCounter)
+{
+    if ( !uap || !programCounter ) return 0;
+
+    ucontext_t* context = (ucontext_t*)uap;
+    if ( !context->uc_mcontext ) return 0;
+    if ( context->uc_mcsize != 0 && context->uc_mcsize < sizeof(*context->uc_mcontext) ) return 0;
+
+#if defined(__arm64__)
+    *programCounter = (uint64_t)context->uc_mcontext->__ss.__pc;
+    return 1;
+#elif defined(__x86_64__)
+    *programCounter = (uint64_t)context->uc_mcontext->__ss.__rip;
+    return 1;
+#else
+    return 0;
+#endif
+}
+
+// Builds the persisted frame contract from the exact interrupted PC plus the
+// return addresses collected inside the signal handler. When machine context
+// is unavailable, the remaining stack is explicitly marked as all return
+// addresses so the server adjusts frame zero instead of silently treating a
+// caller as the crashing instruction.
+HB_PRIVATE int hb_build_signal_addresses(void* uap,
+                                         void* const* unwoundAddresses,
+                                         int unwoundCount,
+                                         uint64_t* crashAddresses,
+                                         int crashCapacity,
+                                         int32_t* firstFrameIsReturnAddress)
+{
+    if ( firstFrameIsReturnAddress ) *firstFrameIsReturnAddress = 0;
+    if ( !crashAddresses || crashCapacity <= 0 ) return 0;
+
+    int out = 0;
+    uint64_t programCounter = 0;
+    if ( hb_interrupted_program_counter(uap, &programCounter) ) {
+        crashAddresses[out++] = programCounter;
+    } else if ( firstFrameIsReturnAddress ) {
+        *firstFrameIsReturnAddress = 1;
+    }
+
+    if ( !unwoundAddresses || unwoundCount <= 0 ) return out;
+
+    // backtrace() starts inside this handler and then the kernel trampoline.
+    // If it cannot produce both internal frames, discard the partial unwind
+    // rather than persist a Honeybadger frame as customer crash data.
+    int skip = unwoundCount < 2 ? unwoundCount : 2;
+    for ( int i = skip; i < unwoundCount && out < crashCapacity; i++ ) {
+        crashAddresses[out++] = (uint64_t)(uintptr_t)unwoundAddresses[i];
+    }
+    return out;
+}
+
 HB_PRIVATE void hb_signal_handler(int signal, siginfo_t* info, void* uap)
 {
     if ( __sync_lock_test_and_set((sig_atomic_t*)&hb_handler_entered, 1) ) {
@@ -824,14 +882,14 @@ HB_PRIVATE void hb_signal_handler(int signal, siginfo_t* info, void* uap)
     // replacing it with a hand-rolled frame-pointer walk.
     static void* addresses[HB_MAX_CRASH_ADDRESSES];
     int count = backtrace(addresses, HB_MAX_CRASH_ADDRESSES);
-
-    // Frames 0 and 1 are this handler and the kernel trampoline (_sigtramp);
-    // skip them so reports group by the faulting frame, not by Honeybadger.
-    int skip = (count > 2) ? 2 : 0;
-    header.address_count = count - skip;
-    for ( int i = 0; i < header.address_count; i++ ) {
-        header.addresses[i] = (uint64_t)(uintptr_t)addresses[i + skip];
-    }
+    header.address_count = hb_build_signal_addresses(
+        uap,
+        addresses,
+        count,
+        header.addresses,
+        HB_MAX_CRASH_ADDRESSES,
+        &header.first_frame_is_return_address
+    );
 
     // Persist the pre-captured image table (see hb_refresh_binary_images):
     // symbolication data must come from THIS process's address space — the
@@ -966,6 +1024,8 @@ HB_PRIVATE void hb_signal_handler(int signal, siginfo_t* info, void* uap)
     int32_t contextLength = header.context_length;
     if ( contextLength < 0 || contextLength > HB_MAX_CONTEXT_JSON ) return nil;
 
+    if ( header.first_frame_is_return_address != 0 && header.first_frame_is_return_address != 1 ) return nil;
+
     NSUInteger expectedLength = sizeof(HBSignalCrashHeader) + (NSUInteger)imageCount * sizeof(HBBinaryImage) + (NSUInteger)contextLength;
     if ( data.length < expectedLength ) return nil;
 
@@ -1035,6 +1095,10 @@ HB_PRIVATE void hb_signal_handler(int signal, siginfo_t* info, void* uap)
     }];
 
     [self addServerRevisionToPayload:payload];
+
+    if ( header.first_frame_is_return_address ) {
+        payload[@"first_frame_is_return_address"] = @YES;
+    }
 
     return payload;
 }

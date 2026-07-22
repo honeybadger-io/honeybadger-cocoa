@@ -68,6 +68,16 @@ void run_signal_replay_tests(void)
     // must be honestly unattributed, not blamed on the nearest image below.
     HB_ASSERT_EQ_OBJ(frames[2][@"file"], @"");
     HB_ASSERT_EQ_OBJ(payload[@"error"][@"message"], @"Signal SIGSEGV (11)");
+    HB_ASSERT_NIL(payload[@"first_frame_is_return_address"]);
+
+    HB_TEST_BEGIN("testReplayMarksFallbackFrameZeroAsReturnAddress");
+    NSMutableData* fallbackData = [synthetic_crash_data() mutableCopy];
+    int32_t returnAddressMarker = 1;
+    [fallbackData replaceBytesInRange:NSMakeRange(offsetof(HBSignalCrashHeader, first_frame_is_return_address), sizeof(int32_t))
+                             withBytes:&returnAddressMarker];
+    NSDictionary* fallbackPayload = [[Honeybadger sharedInstance] payloadFromSignalCrashFileData:fallbackData];
+    HB_ASSERT_NOT_NIL(fallbackPayload);
+    HB_ASSERT_EQ_OBJ(fallbackPayload[@"first_frame_is_return_address"], @YES);
 
     HB_TEST_BEGIN("testReplayRejectsCorruptData");
     Honeybadger* hb = [Honeybadger sharedInstance];
@@ -106,6 +116,21 @@ void run_signal_replay_tests(void)
     uint32_t three = 3;
     [v3File replaceBytesInRange:NSMakeRange(4, 4) withBytes:&three];
     HB_ASSERT_NIL([hb payloadFromSignalCrashFileData:v3File]);
+
+    // v4 predates the explicit frame-zero marker and cannot distinguish an
+    // exact interrupted PC from the old handler-local return-address stack.
+    NSMutableData* v4File = [synthetic_crash_data() mutableCopy];
+    uint32_t four = 4;
+    [v4File replaceBytesInRange:NSMakeRange(4, 4) withBytes:&four];
+    HB_ASSERT_NIL([hb payloadFromSignalCrashFileData:v4File]);
+
+    // The frame marker is a strict boolean-on-disk (0/1). Reject corruption
+    // rather than guessing whether frame zero is exact.
+    NSMutableData* invalidMarker = [synthetic_crash_data() mutableCopy];
+    int32_t twoMarker = 2;
+    [invalidMarker replaceBytesInRange:NSMakeRange(offsetof(HBSignalCrashHeader, first_frame_is_return_address), sizeof(int32_t))
+                              withBytes:&twoMarker];
+    HB_ASSERT_NIL([hb payloadFromSignalCrashFileData:invalidMarker]);
 
     HB_TEST_BEGIN("testReplayToleratesUnparseableContext");
     HBSignalCrashHeader header;
