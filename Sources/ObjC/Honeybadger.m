@@ -393,7 +393,8 @@ HB_PRIVATE volatile int hb_context_json_length = 0;
         @"customErrorClass" : [hb safeTrimmedStr:errorClass],
         @"context" : contextForThisError,
         @"fingerprint" : fingerprint,
-        @"onNotifyCallStackSymbols" : [hb stackTrace:1]
+        @"onNotifyCallStackSymbols" : [hb stackTrace:1],
+        @"onNotifyCallStackReturnAddresses" : [hb stackReturnAddresses:1]
     }];
 }
 
@@ -454,7 +455,8 @@ HB_PRIVATE volatile int hb_context_json_length = 0;
         @"localizedDescription" : [hb safeTrimmedStr:error.localizedDescription],
         @"context" : contextForThisError,
         @"fingerprint" : fingerprint,
-        @"onNotifyCallStackSymbols" : [hb stackTrace:1]
+        @"onNotifyCallStackSymbols" : [hb stackTrace:1],
+        @"onNotifyCallStackReturnAddresses" : [hb stackReturnAddresses:1]
     }];
 }
 
@@ -598,6 +600,7 @@ HB_PRIVATE void hb_capture_exception(NSException *exception, NSString *handlerNa
         @"reason" : [hb safe:exception.reason],
         @"userInfo" : exception.userInfo ? exception.userInfo : @{},
         @"callStackSymbols" : exception.callStackSymbols ? exception.callStackSymbols : @[],
+        @"onNotifyCallStackReturnAddresses" : exception.callStackReturnAddresses ? exception.callStackReturnAddresses : @[],
         @"initialHandler" : handlerName
     } persistOnly:YES];
 
@@ -1081,6 +1084,29 @@ HB_PRIVATE void hb_signal_handler(int signal, siginfo_t* info, void* uap)
 
 - (NSArray<NSDictionary*>*) framesFromCallStack:(NSDictionary*)data
 {
+    // Prefer raw return addresses when present: build frames in the same
+    // {address, method, number, file} shape as the crash path so the server
+    // symbolicates them against the dSYM (resolved names + line numbers).
+    // Falls back to parsing callStackSymbols text when only that is available.
+    NSArray* returnAddresses = data[@"onNotifyCallStackReturnAddresses"];
+    if ( [returnAddresses isKindOfClass:[NSArray class]] && returnAddresses.count > 0 ) {
+        NSMutableArray<NSDictionary*>* frames = [NSMutableArray arrayWithCapacity:returnAddresses.count];
+        for ( NSNumber* addressNum in returnAddresses ) {
+            if ( ![addressNum isKindOfClass:[NSNumber class]] ) continue;
+            uint64_t addr = (uint64_t)[addressNum unsignedLongLongValue];
+            NSString* addressStr = [NSString stringWithFormat:@"0x%llx", (unsigned long long)addr];
+            [frames addObject:@{
+                @"file" : [self imageNameForAddress:addr],
+                @"method" : addressStr,
+                @"number" : @"",
+                @"address" : addressStr
+            }];
+        }
+        if ( frames.count > 0 ) {
+            return frames;
+        }
+    }
+
     NSArray<NSString*>* stackLines = @[];
 
     if ( data[@"onNotifyCallStackSymbols"] ) {
@@ -1220,6 +1246,12 @@ HB_PRIVATE void hb_signal_handler(int signal, siginfo_t* info, void* uap)
     if ( binaryImages ) {
         payload[@"binary_images"] = binaryImages;
     }
+
+    // notify/exception captures use callStackReturnAddresses — the whole
+    // stack is return addresses with no faulting PC, so the server must
+    // adjust frame 0 back into its call site too. Crash reports omit this
+    // (their frame 0 is the exact PC), and the server defaults to crash.
+    payload[@"first_frame_is_return_address"] = @YES;
 
     [self addServerRevisionToPayload:payload];
 
@@ -1544,6 +1576,37 @@ HB_PRIVATE void hb_signal_handler(int signal, siginfo_t* info, void* uap)
         [frames addObject:frame];
     }
     return frames;
+}
+
+// Raw return addresses for the current thread, trimmed the same way as
+// stackTrace:. Unlike callStackSymbols (pre-resolved, mangled text with no
+// line info), these are the actual return-address pointers, so the server can
+// symbolicate a notify/exception backtrace against the uploaded dSYM exactly
+// like a crash report. Parallel to -[NSThread callStackSymbols] in order/count.
+- (NSArray<NSNumber*>*) stackReturnAddresses:(NSUInteger)numTopFramesToRemove {
+    numTopFramesToRemove++; // including the call to this method
+    NSArray<NSNumber*>* addresses = [NSThread callStackReturnAddresses];
+    if ( numTopFramesToRemove >= addresses.count ) {
+        return @[];
+    }
+    return [addresses subarrayWithRange:
+        NSMakeRange(numTopFramesToRemove, addresses.count - numTopFramesToRemove)];
+}
+
+// Attributes a runtime address to the loaded image whose mapped range contains
+// it, mirroring the crash path's image attribution. Returns "" when no image
+// claims the address (the server still symbolicates via binary_images).
+- (NSString*) imageNameForAddress:(uint64_t)addr {
+    NSString* file = @"";
+    uint64_t bestLoad = 0;
+    for ( int j = 0; j < hb_binary_image_count; j++ ) {
+        uint64_t load = hb_binary_images[j].load_address;
+        if ( load > addr || load < bestLoad ) continue;
+        if ( hb_binary_images[j].size != 0 && addr >= load + hb_binary_images[j].size ) continue;
+        bestLoad = load;
+        file = [self stringFromImageName:&hb_binary_images[j]];
+    }
+    return file;
 }
 
 

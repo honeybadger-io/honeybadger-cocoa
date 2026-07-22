@@ -28,6 +28,7 @@ void hb_signal_handler(int signal, siginfo_t* info, void* uap);
 + (instancetype) sharedInstance;
 - (NSString*) environment;
 - (NSDictionary*) buildPayload:(NSDictionary*)data;
+- (NSArray<NSDictionary*>*) framesFromCallStack:(NSDictionary*)data;
 - (NSArray*) captureBinaryImages;
 - (NSString*) crashReportDirectory;
 - (NSString*) uniqueSignalReportPathInDirectory:(NSString*)dir;
