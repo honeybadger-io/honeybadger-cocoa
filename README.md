@@ -377,7 +377,7 @@ Add the script as a Run Script build phase so dSYMs upload automatically wheneve
 
 1. In Xcode, select your app target and go to **Build Phases**.
 2. Click **+** and select **New Run Script Phase**.
-3. Drag the new phase **below** the existing "Copy dSYMs" phase.
+3. Drag the new phase to the **end** of the list, after **Link Binary With Libraries**, so it runs after Xcode has produced the dSYM for the build.
 4. Add the run script for your installation method (below).
 
 **CocoaPods** — the script is installed with the pod, so reference it from `${PODS_ROOT}`:
