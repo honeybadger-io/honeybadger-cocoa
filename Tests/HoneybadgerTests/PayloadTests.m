@@ -35,4 +35,26 @@ void run_payload_tests(void)
     HB_ASSERT_EQ_INT((int)fb.count, 1);
     HB_ASSERT_EQ_OBJ(fb[0][@"address"], @"0x0000000100abc000");
     HB_ASSERT_EQ_OBJ(fb[0][@"file"], @"MyApp");
+    // Device info (#3): a "Device" group in details carries the hardware
+    // model, OS name/version, and locale so the error page can show what
+    // the app was running on. It sits alongside the platform group so
+    // notices from `notify` keep their existing errorDomain/userInfo block.
+    HB_TEST_BEGIN("testBuildPayloadIncludesDeviceDetails");
+    NSDictionary* p3 = [hb buildPayload:@{ @"errorClass" : @"X", @"errorMsg" : @"y" }];
+    NSDictionary* device = p3[@"details"][@"Device"];
+    HB_ASSERT_NOT_NIL(device);
+    HB_ASSERT_TRUE([device[@"model"] length] > 0);
+    HB_ASSERT_TRUE([device[@"os"] length] > 0);
+    HB_ASSERT_TRUE([device[@"os_version"] length] > 0);
+    HB_ASSERT_TRUE([device[@"architecture"] length] > 0);
+    HB_ASSERT_TRUE([device[@"locale"] length] > 0);
+
+    HB_TEST_BEGIN("testBuildPayloadDeviceDetailsDoNotReplacePlatformDetails");
+    NSDictionary* p4 = [hb buildPayload:@{ @"errorClass" : @"X", @"errorMsg" : @"y",
+                                           @"details" : @{ @"errorDomain" : @"d" } }];
+    HB_ASSERT_EQ_INT((int)[p4[@"details"] count], 2);
+    HB_ASSERT_NOT_NIL(p4[@"details"][@"Device"]);
+    NSString* platformKey = [[p4[@"details"] allKeys] filteredArrayUsingPredicate:
+        [NSPredicate predicateWithFormat:@"SELF != 'Device'"]].firstObject;
+    HB_ASSERT_EQ_OBJ(p4[@"details"][platformKey][@"errorDomain"], @"d");
 }

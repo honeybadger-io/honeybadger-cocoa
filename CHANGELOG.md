@@ -5,6 +5,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+### Added
+- Device information in every report: a `Device` group under `details` with hardware model (e.g. `iPhone15,2`, `Mac16,8`), OS name and version, CPU architecture, locale, and a simulator flag. Signal crash reports include it too.
+
 ### Changed
 - README: added Documentation and Support, Development, Releasing, and Contributing sections; fixed missing commas in Swift `notify` examples.
 

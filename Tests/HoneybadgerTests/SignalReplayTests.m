@@ -47,6 +47,17 @@ void run_signal_replay_tests(void)
     HB_TEST_BEGIN("testReplayUsesPersistedImagesNotLiveProcess");
     NSDictionary* payload = [[Honeybadger sharedInstance] payloadFromSignalCrashFileData:synthetic_crash_data()];
     HB_ASSERT_NOT_NIL(payload);
+
+    // Signal reports are rebuilt on the next launch, but the device model
+    // does not change between crash and relaunch, so the Device group is
+    // populated from the live process (#3).
+    HB_TEST_BEGIN("testReplayIncludesDeviceDetails");
+    NSDictionary* device = payload[@"details"][@"Device"];
+    HB_ASSERT_NOT_NIL(device);
+    HB_ASSERT_TRUE([device[@"model"] length] > 0);
+    HB_ASSERT_TRUE([device[@"os_version"] length] > 0);
+
+    HB_TEST_BEGIN("testReplayUsesPersistedImagesNotLiveProcess");
     NSArray* images = payload[@"binary_images"];
     HB_ASSERT_EQ_INT(images.count, 2u);
     HB_ASSERT_EQ_OBJ(images[0][@"load_address"], @"0x1000000000");
