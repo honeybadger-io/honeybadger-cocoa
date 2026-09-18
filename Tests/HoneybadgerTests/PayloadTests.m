@@ -61,10 +61,10 @@ void run_payload_tests(void)
     // not the simulated device. Xcode exports SIMULATOR_MODEL_IDENTIFIER
     // ("iPhone16,2") into the simulated process, so that wins when present.
     // It is never set on a real device or macOS, so this is safe everywhere.
-    // Save the real value so a simulator test run keeps its identifier for
-    // the suites that follow.
+    // Save the real value (raw bytes, so even a non-UTF-8 value survives) so
+    // a simulator test run keeps its identifier for the suites that follow.
     const char* savedSimModel = getenv("SIMULATOR_MODEL_IDENTIFIER");
-    NSString* savedSimModelStr = savedSimModel ? [NSString stringWithUTF8String:savedSimModel] : nil;
+    char* savedSimModelCopy = savedSimModel ? strdup(savedSimModel) : NULL;
 
     HB_TEST_BEGIN("testDeviceModelPrefersSimulatorModelIdentifier");
     setenv("SIMULATOR_MODEL_IDENTIFIER", "iPhone16,2", 1);
@@ -88,7 +88,8 @@ void run_payload_tests(void)
     HB_ASSERT_TRUE(model.length > 0);
     HB_ASSERT_FALSE([model isEqualToString:@"iPhone16,2"]);
 
-    if ( savedSimModelStr ) {
-        setenv("SIMULATOR_MODEL_IDENTIFIER", savedSimModelStr.UTF8String, 1);
+    if ( savedSimModelCopy ) {
+        setenv("SIMULATOR_MODEL_IDENTIFIER", savedSimModelCopy, 1);
+        free(savedSimModelCopy);
     }
 }
