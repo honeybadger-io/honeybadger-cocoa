@@ -6,7 +6,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [2.0.0] - 2026-07-03
+## [2.0.0] - 2026-09-18
 ### Breaking
 - `resetContext:(NSDictionary*)` changed to `resetContext` (no arguments). Clears context to an empty dictionary. Use `resetContext` + `setContext:` to replace context with a new dictionary. (This API change is why this release is 2.0.0.)
 - Minimum deployment targets raised to iOS 16.0 and macOS 13.0 (visionOS 1.0 unchanged).
