@@ -2,6 +2,12 @@
 
 An SDK for integrating [Honeybadger](https://honeybadger.io) into your iOS, macOS, and visionOS apps. This SDK can be used in both Swift and Objective-C projects.
 
+## Documentation and Support
+
+For comprehensive documentation and support, [check out our documentation site](https://docs.honeybadger.io/lib/cocoa/).
+
+The documentation covers installation, configuration, dSYM symbolication, and the full API. If you run into a problem, [open an issue](https://github.com/honeybadger-io/honeybadger-cocoa/issues) or email [support@honeybadger.io](mailto:support@honeybadger.io).
+
 ## Requirements
 
 Version 2.x of the SDK requires:
@@ -147,7 +153,7 @@ Honeybadger.notify(
 );
 
 Honeybadger.notify(
-	errorString: "My error"
+	errorString: "My error",
 	errorClass: "MyCustomErrorType"
 );
 
@@ -163,26 +169,26 @@ Honeybadger.notify(
 
 Honeybadger.notify(
 	errorString: "My error", 
-	errorClass: "MyCustomErrorType"
+	errorClass: "MyCustomErrorType",
 	context: ["user_id" : "123abc"]
 );
 
 Honeybadger.notify(
 	errorString: "My error", 
-	errorClass: "MyCustomErrorType"
+	errorClass: "MyCustomErrorType",
 	fingerprint: "my-custom-error-fingerprint"
 );
 
 Honeybadger.notify(
 	errorString: "My error", 
-	context: ["user_id" : "123abc"]
+	context: ["user_id" : "123abc"],
 	fingerprint: "my-custom-error-fingerprint"
 );
 
 Honeybadger.notify(
 	errorString: "My error", 
-	errorClass: "MyCustomErrorType"
-	context: ["user_id" : "123abc"]
+	errorClass: "MyCustomErrorType",
+	context: ["user_id" : "123abc"],
 	fingerprint: "my-custom-error-fingerprint"
 );
 
@@ -193,36 +199,36 @@ Honeybadger.notify(
 );
 
 Honeybadger.notify(
-	error: MyError("This is my custom error.")
+	error: MyError("This is my custom error."),
 	errorClass: "MyCustomErrorType"
 );
 
 Honeybadger.notify(
-	error: MyError("This is my custom error.")
+	error: MyError("This is my custom error."),
 	context: ["user_id" : "123abc"]
 );
 
 Honeybadger.notify(
-	error: MyError("This is my custom error.")
+	error: MyError("This is my custom error."),
 	fingerprint: "my-custom-error-fingerprint"
 );
 
 Honeybadger.notify(
-	error: MyError("This is my custom error.")
-	errorClass: "MyCustomErrorType"
+	error: MyError("This is my custom error."),
+	errorClass: "MyCustomErrorType",
 	context: ["user_id" : "123abc"]
 );
 
 Honeybadger.notify(
-	error: MyError("This is my custom error.")
-	errorClass: "MyCustomErrorType"
+	error: MyError("This is my custom error."),
+	errorClass: "MyCustomErrorType",
 	fingerprint: "my-custom-error-fingerprint"
 );
 
 Honeybadger.notify(
-	error: MyError("This is my custom error.")
-	errorClass: "MyCustomErrorType"
-	context: ["user_id" : "123abc"]
+	error: MyError("This is my custom error."),
+	errorClass: "MyCustomErrorType",
+	context: ["user_id" : "123abc"],
 	fingerprint: "my-custom-error-fingerprint"
 );
 
@@ -413,6 +419,59 @@ bash upload-dsyms.sh --api-key YOUR_API_KEY --revision "1.4.2"
 ```
 
 Revision is purely for release tracking — dSYM-to-crash matching is done by build UUID, so it works with or without a revision.
+
+## Development
+
+The SDK is a Swift package with an Objective-C core (`Sources/ObjC`) and a Swift wrapper (`Sources/Swift`). It is also published as a CocoaPod.
+
+Tests are an executable target, not an XCTest bundle, so run them with `swift run` rather than `swift test`:
+
+```shell
+swift run HoneybadgerTests
+```
+
+To lint the podspec before a release, you need full Xcode (not just the Command Line Tools) plus the visionOS simulator runtime, which you can install with `xcodebuild -downloadPlatform visionOS`:
+
+```shell
+pod lib lint Honeybadger.podspec
+```
+
+## Releasing
+
+Releases are manual. To ship version `X.Y.Z`:
+
+1. Add a `## [X.Y.Z] - YYYY-MM-DD` entry to `CHANGELOG.md` and move the notes out of `[Unreleased]`.
+2. Set `spec.version` in `Honeybadger.podspec` to `X.Y.Z`.
+3. Set `HONEYBADGER_APPLE_SDK_VERSION` in `Sources/ObjC/Honeybadger.m` to `X.Y.Z`.
+4. Run `pod lib lint Honeybadger.podspec` and fix anything it reports.
+5. Commit and push to `main`.
+6. Tag and push the tag, then create a GitHub Release from it:
+
+   ```shell
+   git tag -a X.Y.Z -m "X.Y.Z"
+   git push origin X.Y.Z
+   gh release create X.Y.Z --title "X.Y.Z" --notes-from-tag
+   ```
+
+7. Publish to CocoaPods trunk (you must be a registered owner of the `Honeybadger` pod; `pod trunk register your@email 'Your Name'` if your session has expired):
+
+   ```shell
+   pod trunk push Honeybadger.podspec
+   ```
+
+   `pod trunk push` sometimes reports a GitHub API timeout even though the push succeeded. Before retrying, check whether the version is already live at https://trunk.cocoapods.org/api/v1/pods/Honeybadger — a retry of a successful push fails with a "duplicate entry" error.
+
+8. Confirm the published spec: `pod spec lint Honeybadger`.
+
+Swift Package Manager users pick up the new version from the git tag; no extra publishing step is needed.
+
+## Contributing
+
+1. Fork the repo.
+2. Create a topic branch: `git checkout -b my_branch`.
+3. Make your changes and add a note under `[Unreleased]` in `CHANGELOG.md`.
+4. Run `swift run HoneybadgerTests`.
+5. Push to your branch and open a pull request.
 
 ## License
 
