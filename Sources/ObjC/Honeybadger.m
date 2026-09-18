@@ -1484,8 +1484,18 @@ HB_PRIVATE void hb_signal_handler(int signal, siginfo_t* info, void* uap)
 // iOS/visionOS expose it as hw.machine; on macOS hw.machine is the CPU arch
 // and hw.model holds the Mac identifier. Falls back to "unknown" so the
 // Device group is always fully populated.
+//
+// On the iOS/visionOS simulator, hw.machine reports the host CPU ("arm64"),
+// not the simulated device. Xcode exports SIMULATOR_MODEL_IDENTIFIER into
+// the simulated process with the device identifier, so that takes priority
+// whenever it is set. It is never set on a real device or in a macOS app.
 - (NSString*) deviceModel
 {
+    const char* simulatorModel = getenv("SIMULATOR_MODEL_IDENTIFIER");
+    if ( simulatorModel && simulatorModel[0] != '\0' ) {
+        return [NSString stringWithUTF8String:simulatorModel];
+    }
+
 #if TARGET_OS_OSX
     const char* key = "hw.model";
 #else

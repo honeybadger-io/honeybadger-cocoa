@@ -57,4 +57,19 @@ void run_payload_tests(void)
     NSString* platformKey = [[p4[@"details"] allKeys] filteredArrayUsingPredicate:
         [NSPredicate predicateWithFormat:@"SELF != 'Device'"]].firstObject;
     HB_ASSERT_EQ_OBJ(p4[@"details"][platformKey][@"errorDomain"], @"d");
+    // On the iOS/visionOS simulator, hw.machine is the host CPU ("arm64"),
+    // not the simulated device. Xcode exports SIMULATOR_MODEL_IDENTIFIER
+    // ("iPhone16,2") into the simulated process, so that wins when present.
+    // It is never set on a real device or macOS, so this is safe everywhere.
+    HB_TEST_BEGIN("testDeviceModelPrefersSimulatorModelIdentifier");
+    setenv("SIMULATOR_MODEL_IDENTIFIER", "iPhone16,2", 1);
+    NSDictionary* p5 = [hb buildPayload:@{ @"errorClass" : @"X", @"errorMsg" : @"y" }];
+    HB_ASSERT_EQ_OBJ(p5[@"details"][@"Device"][@"model"], @"iPhone16,2");
+    unsetenv("SIMULATOR_MODEL_IDENTIFIER");
+
+    HB_TEST_BEGIN("testDeviceModelFallsBackToSysctlWithoutSimulatorVar");
+    NSDictionary* p6 = [hb buildPayload:@{ @"errorClass" : @"X", @"errorMsg" : @"y" }];
+    NSString* model = p6[@"details"][@"Device"][@"model"];
+    HB_ASSERT_TRUE(model.length > 0);
+    HB_ASSERT_FALSE([model isEqualToString:@"iPhone16,2"]);
 }
