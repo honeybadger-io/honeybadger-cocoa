@@ -57,14 +57,17 @@ void run_signal_replay_tests(void)
     HB_ASSERT_NIL(images[1][@"uuid"]);  // has_uuid = 0 → omitted
     HB_ASSERT_EQ_OBJ(payload[@"request"][@"context"][@"user_id"], @"u-42");
 
-    // Signal reports are rebuilt on the next launch, but the device model
-    // does not change between crash and relaunch, so the Device group is
-    // populated from the live process (#3).
-    HB_TEST_BEGIN("testReplayIncludesDeviceDetails");
+    // Signal reports are rebuilt on the next launch, so the Device group is
+    // populated from the live process (#3). The model cannot change between
+    // crash and relaunch. The architecture can (a universal macOS app can
+    // crash under Rosetta and relaunch natively), and the crash file does
+    // not persist it, so it is omitted rather than guessed.
+    HB_TEST_BEGIN("testReplayIncludesDeviceDetailsWithoutArchitecture");
     NSDictionary* device = payload[@"details"][@"Device"];
     HB_ASSERT_NOT_NIL(device);
     HB_ASSERT_TRUE([device[@"model"] length] > 0);
     HB_ASSERT_TRUE([device[@"os_version"] length] > 0);
+    HB_ASSERT_NIL(device[@"architecture"]);
 
     HB_TEST_BEGIN("testReplayFramesMapAddressesToPersistedImages");
     payload = [[Honeybadger sharedInstance] payloadFromSignalCrashFileData:synthetic_crash_data()];

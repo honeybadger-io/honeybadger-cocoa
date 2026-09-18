@@ -1094,7 +1094,7 @@ HB_PRIVATE void hb_signal_handler(int signal, siginfo_t* info, void* uap)
         },
         @"binary_images" : binaryImages,
         @"details" : @{
-            @"Device" : [self deviceDetails]
+            @"Device" : [self deviceDetailsForReplay]
         }
     }];
 
@@ -1493,7 +1493,13 @@ HB_PRIVATE void hb_signal_handler(int signal, siginfo_t* info, void* uap)
 {
     const char* simulatorModel = getenv("SIMULATOR_MODEL_IDENTIFIER");
     if ( simulatorModel && simulatorModel[0] != '\0' ) {
-        return [NSString stringWithUTF8String:simulatorModel];
+        // stringWithUTF8String: returns nil for invalid UTF-8; a nil here
+        // would throw from the dictionary literal in deviceDetails, so fall
+        // through to sysctl instead.
+        NSString* value = [NSString stringWithUTF8String:simulatorModel];
+        if ( value.length > 0 ) {
+            return value;
+        }
     }
 
 #if TARGET_OS_OSX
@@ -1523,10 +1529,12 @@ HB_PRIVATE void hb_signal_handler(int signal, siginfo_t* info, void* uap)
 
 
 // The "Device" group of `details`. Populated from the live process, which
-// is fine for notify/exception reports and acceptable for signal reports
-// (rebuilt on the next launch): the model and architecture cannot change
-// between crash and relaunch, and the OS version only changes if the user
-// updated in between.
+// is exact for notify/exception reports. Signal reports are rebuilt on the
+// next launch: the model cannot change between crash and relaunch, and the
+// OS version only changes if the user updated in between. The architecture
+// *can* change (a universal macOS app may crash under Rosetta as x86_64 and
+// relaunch natively as arm64) and is not persisted in the crash file, so
+// the replay path omits it via deviceDetailsForReplay.
 - (NSDictionary*) deviceDetails
 {
     NSString* localeID = [[NSLocale currentLocale] localeIdentifier];
@@ -1542,6 +1550,15 @@ HB_PRIVATE void hb_signal_handler(int signal, siginfo_t* info, void* uap)
         @"simulator" : @NO
 #endif
     };
+}
+
+
+
+- (NSDictionary*) deviceDetailsForReplay
+{
+    NSMutableDictionary* device = [[self deviceDetails] mutableCopy];
+    [device removeObjectForKey:@"architecture"];
+    return device;
 }
 
 

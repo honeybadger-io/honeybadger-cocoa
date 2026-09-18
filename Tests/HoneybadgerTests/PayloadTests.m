@@ -61,15 +61,34 @@ void run_payload_tests(void)
     // not the simulated device. Xcode exports SIMULATOR_MODEL_IDENTIFIER
     // ("iPhone16,2") into the simulated process, so that wins when present.
     // It is never set on a real device or macOS, so this is safe everywhere.
+    // Save the real value so a simulator test run keeps its identifier for
+    // the suites that follow.
+    const char* savedSimModel = getenv("SIMULATOR_MODEL_IDENTIFIER");
+    NSString* savedSimModelStr = savedSimModel ? [NSString stringWithUTF8String:savedSimModel] : nil;
+
     HB_TEST_BEGIN("testDeviceModelPrefersSimulatorModelIdentifier");
     setenv("SIMULATOR_MODEL_IDENTIFIER", "iPhone16,2", 1);
     NSDictionary* p5 = [hb buildPayload:@{ @"errorClass" : @"X", @"errorMsg" : @"y" }];
     HB_ASSERT_EQ_OBJ(p5[@"details"][@"Device"][@"model"], @"iPhone16,2");
-    unsetenv("SIMULATOR_MODEL_IDENTIFIER");
+
+    // A value that is not valid UTF-8 must not produce a nil model: a nil in
+    // the dictionary literal would throw inside report construction, which
+    // for a replayed signal crash means crashing on launch.
+    HB_TEST_BEGIN("testDeviceModelIgnoresInvalidUTF8SimulatorIdentifier");
+    setenv("SIMULATOR_MODEL_IDENTIFIER", "\xff\xfe", 1);
+    NSDictionary* p7 = [hb buildPayload:@{ @"errorClass" : @"X", @"errorMsg" : @"y" }];
+    NSString* badModel = p7[@"details"][@"Device"][@"model"];
+    HB_ASSERT_TRUE(badModel.length > 0);
+    HB_ASSERT_FALSE([badModel isEqualToString:@"iPhone16,2"]);
 
     HB_TEST_BEGIN("testDeviceModelFallsBackToSysctlWithoutSimulatorVar");
+    unsetenv("SIMULATOR_MODEL_IDENTIFIER");
     NSDictionary* p6 = [hb buildPayload:@{ @"errorClass" : @"X", @"errorMsg" : @"y" }];
     NSString* model = p6[@"details"][@"Device"][@"model"];
     HB_ASSERT_TRUE(model.length > 0);
     HB_ASSERT_FALSE([model isEqualToString:@"iPhone16,2"]);
+
+    if ( savedSimModelStr ) {
+        setenv("SIMULATOR_MODEL_IDENTIFIER", savedSimModelStr.UTF8String, 1);
+    }
 }

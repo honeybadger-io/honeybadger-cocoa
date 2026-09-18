@@ -6,7 +6,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 ### Added
-- Device information in every report: a `Device` group under `details` with hardware model (e.g. `iPhone15,2`, `Mac16,8`), OS name and version, CPU architecture, locale, and a simulator flag. Signal crash reports include it too.
+- Device information in every report: a `Device` group under `details` with hardware model (e.g. `iPhone15,2`, `Mac16,8`), OS name and version, CPU architecture, locale, and a simulator flag. Signal crash reports include it too (minus architecture, which is not persisted at crash time and can differ on relaunch under Rosetta).
 
 ### Changed
 - README: added Documentation and Support, Development, Releasing, and Contributing sections; fixed missing commas in Swift `notify` examples.
