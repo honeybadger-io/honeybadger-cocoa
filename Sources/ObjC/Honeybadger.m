@@ -19,6 +19,7 @@
 #include <unistd.h>
 #include <limits.h>
 #include <math.h>
+#include <sys/sysctl.h>
 #import "HoneybadgerCrashTypes.h"
 
 // Linkage for SDK-internal globals and functions. Shipped builds keep them
@@ -1091,7 +1092,10 @@ HB_PRIVATE void hb_signal_handler(int signal, siginfo_t* info, void* uap)
             @"environment_name" : [self environment],
             @"pid" : @(0)  // the crashed process's pid is gone; 0 = unknown
         },
-        @"binary_images" : binaryImages
+        @"binary_images" : binaryImages,
+        @"details" : @{
+            @"Device" : [self deviceDetailsForReplay]
+        }
     }];
 
     [self addServerRevisionToPayload:payload];
@@ -1299,12 +1303,13 @@ HB_PRIVATE void hb_signal_handler(int signal, siginfo_t* info, void* uap)
     }];
 
     // Fix: use direct dictionary access instead of stringValueForKey: (details is an NSDictionary)
+    NSMutableDictionary* detailsGroups = [NSMutableDictionary dictionary];
     id details = data[@"details"];
     if ( details && [details isKindOfClass:[NSDictionary class]] ) {
-        payload[@"details"] = @{
-            shortPlatformName : details
-        };
+        detailsGroups[shortPlatformName] = details;
     }
+    detailsGroups[@"Device"] = [self deviceDetails];
+    payload[@"details"] = detailsGroups;
 
     NSArray* binaryImages = [self captureBinaryImages];
     if ( binaryImages ) {
@@ -1469,6 +1474,91 @@ HB_PRIVATE void hb_signal_handler(int signal, siginfo_t* info, void* uap)
     NSLog(@"Error: unsupported platform.");
     return @"";
 #endif
+}
+
+
+
+// -- DEVICE INFO ----------------------------------------------------------
+
+// Hardware model identifier: "iPhone15,2", "Mac14,6", "RealityDevice14,1".
+// iOS/visionOS expose it as hw.machine; on macOS hw.machine is the CPU arch
+// and hw.model holds the Mac identifier. Falls back to "unknown" so the
+// Device group is always fully populated.
+//
+// On the iOS/visionOS simulator, hw.machine reports the host CPU ("arm64"),
+// not the simulated device. Xcode exports SIMULATOR_MODEL_IDENTIFIER into
+// the simulated process with the device identifier, so that takes priority
+// whenever it is set. It is never set on a real device or in a macOS app.
+- (NSString*) deviceModel
+{
+    const char* simulatorModel = getenv("SIMULATOR_MODEL_IDENTIFIER");
+    if ( simulatorModel && simulatorModel[0] != '\0' ) {
+        // stringWithUTF8String: returns nil for invalid UTF-8; a nil here
+        // would throw from the dictionary literal in deviceDetails, so fall
+        // through to sysctl instead.
+        NSString* value = [NSString stringWithUTF8String:simulatorModel];
+        if ( value.length > 0 ) {
+            return value;
+        }
+    }
+
+#if TARGET_OS_OSX
+    const char* key = "hw.model";
+#else
+    const char* key = "hw.machine";
+#endif
+    size_t size = 0;
+    if ( sysctlbyname(key, NULL, &size, NULL, 0) != 0 || size == 0 ) {
+        return @"unknown";
+    }
+    char* buf = malloc(size);
+    if ( !buf ) {
+        return @"unknown";
+    }
+    NSString* model = @"unknown";
+    if ( sysctlbyname(key, buf, &size, NULL, 0) == 0 ) {
+        NSString* value = [[NSString alloc] initWithBytes:buf length:strnlen(buf, size) encoding:NSUTF8StringEncoding];
+        if ( value.length > 0 ) {
+            model = value;
+        }
+    }
+    free(buf);
+    return model;
+}
+
+
+
+// The "Device" group of `details`. Populated from the live process, which
+// is exact for notify/exception reports. Signal reports are rebuilt on the
+// next launch: the model cannot change between crash and relaunch, and the
+// OS version only changes if the user updated in between. The architecture
+// *can* change (a universal macOS app may crash under Rosetta as x86_64 and
+// relaunch natively as arm64) and is not persisted in the crash file, so
+// the replay path omits it via deviceDetailsForReplay.
+- (NSDictionary*) deviceDetails
+{
+    NSString* localeID = [[NSLocale currentLocale] localeIdentifier];
+    return @{
+        @"model" : [self deviceModel],
+        @"os" : [self platformName],
+        @"os_version" : [self platformVersion],
+        @"architecture" : [self currentArchitectureName],
+        @"locale" : localeID.length > 0 ? localeID : @"unknown",
+#if TARGET_OS_SIMULATOR
+        @"simulator" : @YES
+#else
+        @"simulator" : @NO
+#endif
+    };
+}
+
+
+
+- (NSDictionary*) deviceDetailsForReplay
+{
+    NSMutableDictionary* device = [[self deviceDetails] mutableCopy];
+    [device removeObjectForKey:@"architecture"];
+    return device;
 }
 
 

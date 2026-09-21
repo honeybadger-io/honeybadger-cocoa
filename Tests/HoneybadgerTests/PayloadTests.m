@@ -35,4 +35,61 @@ void run_payload_tests(void)
     HB_ASSERT_EQ_INT((int)fb.count, 1);
     HB_ASSERT_EQ_OBJ(fb[0][@"address"], @"0x0000000100abc000");
     HB_ASSERT_EQ_OBJ(fb[0][@"file"], @"MyApp");
+    // Device info (#3): a "Device" group in details carries the hardware
+    // model, OS name/version, and locale so the error page can show what
+    // the app was running on. It sits alongside the platform group so
+    // notices from `notify` keep their existing errorDomain/userInfo block.
+    HB_TEST_BEGIN("testBuildPayloadIncludesDeviceDetails");
+    NSDictionary* p3 = [hb buildPayload:@{ @"errorClass" : @"X", @"errorMsg" : @"y" }];
+    NSDictionary* device = p3[@"details"][@"Device"];
+    HB_ASSERT_NOT_NIL(device);
+    HB_ASSERT_TRUE([device[@"model"] length] > 0);
+    HB_ASSERT_TRUE([device[@"os"] length] > 0);
+    HB_ASSERT_TRUE([device[@"os_version"] length] > 0);
+    HB_ASSERT_TRUE([device[@"architecture"] length] > 0);
+    HB_ASSERT_TRUE([device[@"locale"] length] > 0);
+
+    HB_TEST_BEGIN("testBuildPayloadDeviceDetailsDoNotReplacePlatformDetails");
+    NSDictionary* p4 = [hb buildPayload:@{ @"errorClass" : @"X", @"errorMsg" : @"y",
+                                           @"details" : @{ @"errorDomain" : @"d" } }];
+    HB_ASSERT_EQ_INT((int)[p4[@"details"] count], 2);
+    HB_ASSERT_NOT_NIL(p4[@"details"][@"Device"]);
+    NSString* platformKey = [[p4[@"details"] allKeys] filteredArrayUsingPredicate:
+        [NSPredicate predicateWithFormat:@"SELF != 'Device'"]].firstObject;
+    HB_ASSERT_EQ_OBJ(p4[@"details"][platformKey][@"errorDomain"], @"d");
+    // On the iOS/visionOS simulator, hw.machine is the host CPU ("arm64"),
+    // not the simulated device. Xcode exports SIMULATOR_MODEL_IDENTIFIER
+    // ("iPhone16,2") into the simulated process, so that wins when present.
+    // It is never set on a real device or macOS, so this is safe everywhere.
+    // Save the real value (raw bytes, so even a non-UTF-8 value survives) so
+    // a simulator test run keeps its identifier for the suites that follow.
+    const char* savedSimModel = getenv("SIMULATOR_MODEL_IDENTIFIER");
+    char* savedSimModelCopy = savedSimModel ? strdup(savedSimModel) : NULL;
+
+    HB_TEST_BEGIN("testDeviceModelPrefersSimulatorModelIdentifier");
+    setenv("SIMULATOR_MODEL_IDENTIFIER", "iPhone16,2", 1);
+    NSDictionary* p5 = [hb buildPayload:@{ @"errorClass" : @"X", @"errorMsg" : @"y" }];
+    HB_ASSERT_EQ_OBJ(p5[@"details"][@"Device"][@"model"], @"iPhone16,2");
+
+    // A value that is not valid UTF-8 must not produce a nil model: a nil in
+    // the dictionary literal would throw inside report construction, which
+    // for a replayed signal crash means crashing on launch.
+    HB_TEST_BEGIN("testDeviceModelIgnoresInvalidUTF8SimulatorIdentifier");
+    setenv("SIMULATOR_MODEL_IDENTIFIER", "\xff\xfe", 1);
+    NSDictionary* p7 = [hb buildPayload:@{ @"errorClass" : @"X", @"errorMsg" : @"y" }];
+    NSString* badModel = p7[@"details"][@"Device"][@"model"];
+    HB_ASSERT_TRUE(badModel.length > 0);
+    HB_ASSERT_FALSE([badModel isEqualToString:@"iPhone16,2"]);
+
+    HB_TEST_BEGIN("testDeviceModelFallsBackToSysctlWithoutSimulatorVar");
+    unsetenv("SIMULATOR_MODEL_IDENTIFIER");
+    NSDictionary* p6 = [hb buildPayload:@{ @"errorClass" : @"X", @"errorMsg" : @"y" }];
+    NSString* model = p6[@"details"][@"Device"][@"model"];
+    HB_ASSERT_TRUE(model.length > 0);
+    HB_ASSERT_FALSE([model isEqualToString:@"iPhone16,2"]);
+
+    if ( savedSimModelCopy ) {
+        setenv("SIMULATOR_MODEL_IDENTIFIER", savedSimModelCopy, 1);
+        free(savedSimModelCopy);
+    }
 }

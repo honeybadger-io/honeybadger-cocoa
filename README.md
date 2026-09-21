@@ -361,6 +361,10 @@ Honeybadger.resetContext();
 [Honeybadger resetContext];
 ```
 
+### Device information
+
+Every report includes a **Device** group in the error's Details tab with the hardware model (e.g. `iPhone15,2`), OS name and version, CPU architecture, locale, and whether the app was running in the simulator. This is collected automatically; nothing to configure.
+
 ## dSYM Upload for Symbolication
 
 When Xcode builds your app for distribution, it strips debug symbols from the binary to reduce file size. These symbols are saved separately in a `.dSYM` bundle alongside your build. Without uploading these bundles to Honeybadger, crash reports will show raw memory addresses instead of the function names, file names, and line numbers you need to diagnose the crash.
